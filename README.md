@@ -58,12 +58,12 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/Wangnov/uv-custom/
 
 ```sh
 # macOS / Linux
-curl -LsSf https://gitee.com/wangnov/uv-custom/releases/latest/download/setup_hooks.sh | sh
+curl -LsSf https://gitee.com/wangnov/uv-custom/releases/download/latest/setup_hooks.sh | sh
 ```
 
 ```powershell
 # Windows (PowerShell)
-powershell -ExecutionPolicy Bypass -c "irm https://gitee.com/wangnov/uv-custom/releases/latest/download/setup_hooks.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://gitee.com/wangnov/uv-custom/releases/download/latest/setup_hooks.ps1 | iex"
 ```
 
 ---
