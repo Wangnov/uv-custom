@@ -104,7 +104,7 @@ function Inject-UvCondaHook {
     # Generate hook code based on ignore_base setting
     if ($IgnoreBase) {
         $hookCondition = @"
-    if ((Test-Path Env:CONDA_PREFIX) -and (Get-Command conda -ErrorAction SilentlyContinue) -and (`$env:CONDA_PREFIX -ne (conda info --base))) {
+    if ((Test-Path Env:CONDA_PREFIX) -and (`$env:CONDA_DEFAULT_ENV -ne "base")) {
         if (-not (Test-Path Env:UV_PROJECT_ENVIRONMENT) -or (`$env:UV_PROJECT_ENVIRONMENT -ne `$env:CONDA_PREFIX)) {
             `$env:UV_PROJECT_ENVIRONMENT = `$env:CONDA_PREFIX
         }

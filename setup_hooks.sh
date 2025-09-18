@@ -109,7 +109,7 @@ setup_bash() {
         code_block=$(cat <<'EOF'
 # UV-CONDA-HOOK-BASH-START
 _sync_mamba_uv_env() {
-  if [ -n "$CONDA_PREFIX" ] && command -v conda >/dev/null 2>&1 && [ "$CONDA_PREFIX" != "$(conda info --base)" ]; then
+  if [ -n "$CONDA_PREFIX" ] && [ "$CONDA_DEFAULT_ENV" != "base" ]; then
     if [ -z "$UV_PROJECT_ENVIRONMENT" ] || [ "$UV_PROJECT_ENVIRONMENT" != "$CONDA_PREFIX" ]; then
       export UV_PROJECT_ENVIRONMENT="$CONDA_PREFIX"
     fi
@@ -162,7 +162,7 @@ setup_zsh() {
         code_block=$(cat <<'EOF'
 # UV-CONDA-HOOK-ZSH-START
 _sync_mamba_uv_env() {
-  if [ -n "$CONDA_PREFIX" ] && command -v conda >/dev/null 2>&1 && [ "$CONDA_PREFIX" != "$(conda info --base)" ]; then
+  if [ -n "$CONDA_PREFIX" ] && [ "base" != "$CONDA_DEFAULT_ENV" ]; then
     if [ -z "$UV_PROJECT_ENVIRONMENT" ] || [ "$UV_PROJECT_ENVIRONMENT" != "$CONDA_PREFIX" ]; then
       export UV_PROJECT_ENVIRONMENT="$CONDA_PREFIX"
     fi
@@ -215,7 +215,7 @@ setup_fish() {
         code_block=$(cat <<'EOF'
 # UV-CONDA-HOOK-FISH-START
 function _sync_mamba_uv_env --on-event fish_preexec
-    if set -q CONDA_PREFIX; and command -v conda >/dev/null 2>&1; and test "$CONDA_PREFIX" != (conda info --base)
+    if set -q CONDA_PREFIX; and test "$CONDA_DEFAULT_ENV" != "base"
         if not set -q UV_PROJECT_ENVIRONMENT; or test "$UV_PROJECT_ENVIRONMENT" != "$CONDA_PREFIX"
             set -gx UV_PROJECT_ENVIRONMENT "$CONDA_PREFIX"
         end
@@ -262,7 +262,7 @@ setup_elvish() {
         code_block=$(cat <<'EOF'
 # UV-CONDA-HOOK-ELVISH-START
 set edit:before-prompt = [ $@edit:before-prompt {
-    if (and (has-env CONDA_PREFIX) (has-external conda) (not (== $E:CONDA_PREFIX (conda info --base | slurp)))) {
+    if (and (has-env CONDA_PREFIX) (not (== $E:CONDA_DEFAULT_ENV “base”))) {
         if (not (has-env UV_PROJECT_ENVIRONMENT)) or (not (== $E:UV_PROJECT_ENVIRONMENT $E:CONDA_PREFIX)) {
             set-env UV_PROJECT_ENVIRONMENT $E:CONDA_PREFIX
         }
