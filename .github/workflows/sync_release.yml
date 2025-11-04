@@ -45,10 +45,23 @@ jobs:
             API_URL="$API_URL?access_token=$GITEE_TOKEN"
           fi
 
-          RESPONSE=$(curl -sSL \
+          RESPONSE_FILE=$(mktemp)
+          HTTP_CODE=$(curl -sS \
+            -w '%{http_code}' \
+            -H "Content-Type: application/json;charset=UTF-8" \
             -H "Accept: application/json" \
             -H "User-Agent: uv-custom-sync-release/1.0" \
+            -o "$RESPONSE_FILE" \
             "$API_URL")
+
+          RESPONSE=$(cat "$RESPONSE_FILE")
+          rm -f "$RESPONSE_FILE"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "请求 Gitee API 失败，HTTP 状态码: $HTTP_CODE" >&2
+            echo "$RESPONSE" >&2
+            exit 1
+          fi
 
           if ! LATEST_GITEE_TAG=$(jq -er '.tag_name' <<<"$RESPONSE"); then
             echo "无法从 Gitee API 响应中解析 tag_name，原始返回如下：" >&2
