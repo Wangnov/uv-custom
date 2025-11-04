@@ -12,6 +12,13 @@ jobs:
       proceed: ${{ steps.compare_versions.outputs.proceed }}
       new_tag: ${{ steps.get_uv_version.outputs.tag }}
     steps:
+      - name: Ensure jq is available
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y jq
+          fi
+
       - name: Get latest uv release version
         id: get_uv_version
         run: |
@@ -32,8 +39,24 @@ jobs:
           GITEE_OWNER: "wangnov"
           GITEE_REPO: "uv-custom"
         run: |
-          LATEST_GITEE_TAG=$(curl -sL "https://gitee.com/api/v5/repos/$GITEE_OWNER/$GITEE_REPO/releases/latest?access_token=$GITEE_TOKEN" | jq -r .tag_name)
-          echo "tag=$LATEST_GITEE_TAG" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          API_URL="https://gitee.com/api/v5/repos/$GITEE_OWNER/$GITEE_REPO/releases/latest"
+          if [ -n "${GITEE_TOKEN:-}" ]; then
+            API_URL="$API_URL?access_token=$GITEE_TOKEN"
+          fi
+
+          RESPONSE=$(curl -sSL \
+            -H "Accept: application/json" \
+            -H "User-Agent: uv-custom-sync-release/1.0" \
+            "$API_URL")
+
+          if ! LATEST_GITEE_TAG=$(jq -er '.tag_name' <<<"$RESPONSE"); then
+            echo "无法从 Gitee API 响应中解析 tag_name，原始返回如下：" >&2
+            echo "$RESPONSE" >&2
+            exit 1
+          fi
+
+          echo "tag=$LATEST_GITEE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Compare versions and decide to proceed
         id: compare_versions
