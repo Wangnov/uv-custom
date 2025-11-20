@@ -157,13 +157,13 @@ jobs:
 
           #### macOS / Linux 示例
           \`\`\`sh
-          UV_DOWNLOAD_PROXY="https://ghproxy.com" UV_PYPI_MIRROR="https://mirrors.aliyun.com/pypi/simple/" UV_VERSION="0.7.19" \
+          UV_DOWNLOAD_PROXY="https://gh-proxy.com" UV_PYPI_MIRROR="https://mirrors.aliyun.com/pypi/simple/" UV_VERSION="0.7.19" \
           curl -LsSf $GITEE_REPO_URL/releases/download/$RELEASE_TAG/uv-installer-custom.sh | sh
           \`\`\`
 
           #### Windows (PowerShell) 示例
           \`\`\`powershell
-          $env:UV_DOWNLOAD_PROXY="https://ghproxy.com"; $env:UV_PYPI_MIRROR="https://mirrors.aliyun.com/pypi/simple/"; $env:UV_VERSION="0.7.19"; \
+          $env:UV_DOWNLOAD_PROXY="https://gh-proxy.com"; $env:UV_PYPI_MIRROR="https://mirrors.aliyun.com/pypi/simple/"; $env:UV_VERSION="0.7.19"; \
           powershell -ExecutionPolicy Bypass -c "irm $GITEE_REPO_URL/releases/download/$RELEASE_TAG/uv-installer-custom.ps1 | iex"
           \`\`\`
 
