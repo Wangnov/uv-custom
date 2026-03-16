@@ -105,6 +105,13 @@ class MetadataTests(unittest.TestCase):
         )
         self.assertEqual(
             rewrite_python_download_url(
+                "https://github.com/astral-sh/python-build-standalone/releases/download/20260310/cpython-3.12.13%2B20260310-aarch64-apple-darwin-install_only_stripped.tar.gz",
+                public_base_url,
+            ),
+            "https://uv.example.com/python-build-standalone/releases/download/20260310/cpython-3.12.13-plus-20260310-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        )
+        self.assertEqual(
+            rewrite_python_download_url(
                 "https://downloads.python.org/pypy/pypy3.11-v7.3.20-linux64.tar.bz2",
                 public_base_url,
             ),
@@ -124,6 +131,12 @@ class MetadataTests(unittest.TestCase):
                 "https://github.com/astral-sh/python-build-standalone/releases/download/20260310/file.tar.gz"
             ),
             "python-build-standalone/releases/download/20260310/file.tar.gz",
+        )
+        self.assertEqual(
+            mirror_path_for_python_download_url(
+                "https://github.com/astral-sh/python-build-standalone/releases/download/20260310/cpython-3.12.13%2B20260310-aarch64-apple-darwin-install_only_stripped.tar.gz"
+            ),
+            "python-build-standalone/releases/download/20260310/cpython-3.12.13-plus-20260310-aarch64-apple-darwin-install_only_stripped.tar.gz",
         )
         self.assertEqual(
             mirror_path_for_python_download_url(

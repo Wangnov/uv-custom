@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable
+from urllib.parse import unquote
 
 
 PYTHON_BUILD_STANDALONE_PREFIX = (
@@ -53,12 +54,18 @@ def diff_stale_keys(
 
 
 def mirror_path_for_python_download_url(url: str) -> str:
+    def sanitize(path: str) -> str:
+        return unquote(path).replace("%", "-pct-").replace("+", "-plus-")
+
     if url.startswith(PYTHON_BUILD_STANDALONE_PREFIX):
-        return f"python-build-standalone/releases/download/{url[len(PYTHON_BUILD_STANDALONE_PREFIX):]}"
+        return (
+            "python-build-standalone/releases/download/"
+            f"{sanitize(url[len(PYTHON_BUILD_STANDALONE_PREFIX):])}"
+        )
     if url.startswith(PYPY_PREFIX):
-        return f"pypy/{url[len(PYPY_PREFIX):]}"
+        return f"pypy/{sanitize(url[len(PYPY_PREFIX):])}"
     if url.startswith(GRAALPY_PREFIX):
-        return f"graalpython/releases/download/{url[len(GRAALPY_PREFIX):]}"
+        return f"graalpython/releases/download/{sanitize(url[len(GRAALPY_PREFIX):])}"
     raise ValueError(f"unsupported python download url: {url}")
 
 
