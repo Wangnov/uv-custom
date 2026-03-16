@@ -24,6 +24,23 @@ jobs:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
+      RCLONE_CONFIG_MIRROR_TYPE: s3
+      RCLONE_CONFIG_MIRROR_PROVIDER: Other
+      RCLONE_CONFIG_MIRROR_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_MIRROR_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_MIRROR_ENDPOINT: ${{ secrets.AWS_ENDPOINT_URL }}
+      RCLONE_CONFIG_MIRROR_REGION: ${{ secrets.AWS_REGION }}
+      RCLONE_CONFIG_MIRROR_FORCE_PATH_STYLE: "true"
+      RCLONE_TRANSFERS: "1"
+      RCLONE_CHECKERS: "1"
+      RCLONE_S3_UPLOAD_CONCURRENCY: "1"
+      RCLONE_S3_CHUNK_SIZE: "128Mi"
+      RCLONE_RETRIES: "20"
+      RCLONE_LOW_LEVEL_RETRIES: "20"
+      RCLONE_RETRIES_SLEEP: "10s"
+      RCLONE_TPSLIMIT: "0.5"
+      RCLONE_TPSLIMIT_BURST: "1"
+      RCLONE_STATS: "20s"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -32,6 +49,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Install rclone
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rclone
 
       - name: Validate mirror configuration
         shell: bash
@@ -70,46 +94,27 @@ jobs:
             --default-index-url "$DEFAULT_INDEX_URL" \
             --output-dir "$stage_dir"
 
-          aws s3 sync \
+          RCLONE_CACHE_CONTROL="public, max-age=31536000, immutable" \
+          bash scripts/rclone_s3_mirror.sh copy-dir \
             "$versioned_dir/" \
-            "s3://$S3_BUCKET/github/astral-sh/uv/releases/download/$uv_tag/" \
-            --endpoint-url "$AWS_ENDPOINT_URL" \
-            --cache-control "public, max-age=31536000, immutable"
+            "github/astral-sh/uv/releases/download/$uv_tag/"
 
-          aws s3 sync \
+          RCLONE_CACHE_CONTROL="public, max-age=300" \
+          bash scripts/rclone_s3_mirror.sh sync-dir \
             "$latest_dir/" \
-            "s3://$S3_BUCKET/github/astral-sh/uv/releases/download/latest/" \
-            --endpoint-url "$AWS_ENDPOINT_URL" \
-            --delete \
-            --cache-control "public, max-age=300"
+            "github/astral-sh/uv/releases/download/latest/"
 
-          aws s3 cp \
+          RCLONE_CACHE_CONTROL="public, max-age=300" \
+          bash scripts/rclone_s3_mirror.sh copy-file \
             "$stage_dir/metadata/uv-latest.json" \
-            "s3://$S3_BUCKET/metadata/uv-latest.json" \
-            --endpoint-url "$AWS_ENDPOINT_URL" \
-            --cache-control "public, max-age=300"
+            "metadata/uv-latest.json"
 
-          aws s3 cp \
+          RCLONE_CACHE_CONTROL="public, max-age=300" \
+          bash scripts/rclone_s3_mirror.sh copy-file \
             "$stage_dir/install-cn.sh" \
-            "s3://$S3_BUCKET/install-cn.sh" \
-            --endpoint-url "$AWS_ENDPOINT_URL" \
-            --cache-control "public, max-age=300"
+            "install-cn.sh"
 
-          aws s3 cp \
+          RCLONE_CACHE_CONTROL="public, max-age=300" \
+          bash scripts/rclone_s3_mirror.sh copy-file \
             "$stage_dir/install-cn.ps1" \
-            "s3://$S3_BUCKET/install-cn.ps1" \
-            --endpoint-url "$AWS_ENDPOINT_URL" \
-            --cache-control "public, max-age=300"
-
-      - name: Prune old uv versions
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -t tags < <(gh api repos/astral-sh/uv/releases --paginate --jq '.[].tag_name')
-          if [ "${#tags[@]}" -eq 0 ]; then
-            exit 0
-          fi
-          while IFS= read -r stale_tag; do
-            [ -z "$stale_tag" ] && continue
-            aws s3 rm "s3://$S3_BUCKET/github/astral-sh/uv/releases/download/$stale_tag/" --recursive --endpoint-url "$AWS_ENDPOINT_URL"
-          done < <(python3 -m scripts.mirrorctl plan-uv-prune --keep 20 "${tags[@]}")
+            "install-cn.ps1"

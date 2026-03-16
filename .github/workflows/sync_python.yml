@@ -22,6 +22,23 @@ jobs:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
+      RCLONE_CONFIG_MIRROR_TYPE: s3
+      RCLONE_CONFIG_MIRROR_PROVIDER: Other
+      RCLONE_CONFIG_MIRROR_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_MIRROR_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_MIRROR_ENDPOINT: ${{ secrets.AWS_ENDPOINT_URL }}
+      RCLONE_CONFIG_MIRROR_REGION: ${{ secrets.AWS_REGION }}
+      RCLONE_CONFIG_MIRROR_FORCE_PATH_STYLE: "true"
+      RCLONE_TRANSFERS: "1"
+      RCLONE_CHECKERS: "1"
+      RCLONE_S3_UPLOAD_CONCURRENCY: "1"
+      RCLONE_S3_CHUNK_SIZE: "128Mi"
+      RCLONE_RETRIES: "20"
+      RCLONE_LOW_LEVEL_RETRIES: "20"
+      RCLONE_RETRIES_SLEEP: "10s"
+      RCLONE_TPSLIMIT: "0.5"
+      RCLONE_TPSLIMIT_BURST: "1"
+      RCLONE_STATS: "20s"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,6 +47,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Install rclone
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rclone
 
       - name: Validate mirror configuration
         shell: bash
@@ -85,34 +109,27 @@ jobs:
           PY
 
           if [ -d "$stage_dir/python-build-standalone" ]; then
-            aws s3 sync \
+            RCLONE_CACHE_CONTROL="public, max-age=31536000, immutable" \
+            bash scripts/rclone_s3_mirror.sh sync-dir \
               "$stage_dir/python-build-standalone/" \
-              "s3://$S3_BUCKET/python-build-standalone/" \
-              --endpoint-url "$AWS_ENDPOINT_URL" \
-              --delete \
-              --cache-control "public, max-age=31536000, immutable"
+              "python-build-standalone/"
           fi
 
           if [ -d "$stage_dir/pypy" ]; then
-            aws s3 sync \
+            RCLONE_CACHE_CONTROL="public, max-age=31536000, immutable" \
+            bash scripts/rclone_s3_mirror.sh sync-dir \
               "$stage_dir/pypy/" \
-              "s3://$S3_BUCKET/pypy/" \
-              --endpoint-url "$AWS_ENDPOINT_URL" \
-              --delete \
-              --cache-control "public, max-age=31536000, immutable"
+              "pypy/"
           fi
 
           if [ -d "$stage_dir/graalpython" ]; then
-            aws s3 sync \
+            RCLONE_CACHE_CONTROL="public, max-age=31536000, immutable" \
+            bash scripts/rclone_s3_mirror.sh sync-dir \
               "$stage_dir/graalpython/" \
-              "s3://$S3_BUCKET/graalpython/" \
-              --endpoint-url "$AWS_ENDPOINT_URL" \
-              --delete \
-              --cache-control "public, max-age=31536000, immutable"
+              "graalpython/"
           fi
 
-          aws s3 cp \
+          RCLONE_CACHE_CONTROL="public, max-age=300" \
+          bash scripts/rclone_s3_mirror.sh copy-file \
             "$stage_dir/metadata/python-downloads.json" \
-            "s3://$S3_BUCKET/metadata/python-downloads.json" \
-            --endpoint-url "$AWS_ENDPOINT_URL" \
-            --cache-control "public, max-age=300"
+            "metadata/python-downloads.json"

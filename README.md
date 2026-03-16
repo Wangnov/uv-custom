@@ -117,25 +117,42 @@ https://mirrors.aliyun.com/pypi/simple
 
 - 每小时轮询 `astral-sh/uv`
 - 下载最新 release 的全部资产
-- 上传到：
+- 通过 `rclone` 的 S3 后端上传到：
   - `/github/astral-sh/uv/releases/download/<tag>/`
   - `/github/astral-sh/uv/releases/download/latest/`
 - 生成：
   - `/metadata/uv-latest.json`
   - `/install-cn.sh`
   - `/install-cn.ps1`
-- 自动清理仅保留最近 `20` 个 `uv` 版本
+- 不再在主链路里删除旧版本目录，优先保证同步稳定性
 
 ### `sync_python.yml`
 
 - 每 6 小时拉取一次 `uv` 上游的 `download-metadata.json`
 - 针对 `CPython`、`PyPy`、`GraalPy` 各自只保留最新 build
 - 重写 URL 到你的公开基地址
-- 上传：
+- 通过 `rclone sync` 上传并清理旧资产：
   - `/python-build-standalone/...`
   - `/pypy/...`
   - `/graalpython/...`
   - `/metadata/python-downloads.json`
+
+## 为什么不用 `aws s3 sync`
+
+对 IHEP 这类 S3 兼容网关，`aws s3 sync` 在高层 transfer manager 模式下会并发触发 `PutObject`、`CreateMultipartUpload` 与 `UploadPart`。本项目实测里它会在已经写入部分对象后，继续混合报出临时性的 `AccessDenied`。
+
+当前仓库改为使用文档中同样支持的 `rclone` S3 后端，并且显式限制：
+
+- `--transfers 1`
+- `--checkers 1`
+- `--s3-upload-concurrency 1`
+- `--s3-chunk-size 128Mi`
+- `--tpslimit 0.5`
+- `--retries 20`
+- `--low-level-retries 20`
+- `--retries-sleep 10s`
+
+这套参数更适合当前桶网关的节流行为，能把“短时间临时拒绝”转成可恢复的重试，而不是让 workflow 直接失败。
 
 ## 本地验证
 
