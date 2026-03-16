@@ -61,28 +61,28 @@ jobs:
             --public-base-url "$PUBLIC_BASE_URL"
 
           python3 - "$stage_dir/python-assets.json" "$stage_dir" <<'PY'
-import hashlib
-import json
-import pathlib
-import sys
-import urllib.request
+          import hashlib
+          import json
+          import pathlib
+          import sys
+          import urllib.request
 
-manifest_path = pathlib.Path(sys.argv[1])
-stage_dir = pathlib.Path(sys.argv[2])
-assets = json.loads(manifest_path.read_text(encoding="utf-8"))
+          manifest_path = pathlib.Path(sys.argv[1])
+          stage_dir = pathlib.Path(sys.argv[2])
+          assets = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-for asset in assets:
-    destination = stage_dir / asset["mirror_path"]
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    urllib.request.urlretrieve(asset["source_url"], destination)
-    expected_sha256 = asset.get("sha256")
-    if expected_sha256:
-        digest = hashlib.sha256(destination.read_bytes()).hexdigest()
-        if digest != expected_sha256:
-            raise SystemExit(
-                f"sha256 mismatch for {asset['source_url']}: {digest} != {expected_sha256}"
-            )
-PY
+          for asset in assets:
+              destination = stage_dir / asset["mirror_path"]
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              urllib.request.urlretrieve(asset["source_url"], destination)
+              expected_sha256 = asset.get("sha256")
+              if expected_sha256:
+                  digest = hashlib.sha256(destination.read_bytes()).hexdigest()
+                  if digest != expected_sha256:
+                      raise SystemExit(
+                          f"sha256 mismatch for {asset['source_url']}: {digest} != {expected_sha256}"
+                      )
+          PY
 
           if [ -d "$stage_dir/python-build-standalone" ]; then
             aws s3 sync \
