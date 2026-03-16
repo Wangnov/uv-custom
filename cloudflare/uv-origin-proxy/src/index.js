@@ -121,6 +121,9 @@ async function buildSigningHeaders(method, originUrl, config) {
     "x-amz-content-sha256": payloadHash,
     "x-amz-date": amzDate,
   };
+  if (method === "GET") {
+    headersToSign["x-amz-checksum-mode"] = "ENABLED";
+  }
   if (config.sessionToken) {
     headersToSign["x-amz-security-token"] = config.sessionToken;
   }
