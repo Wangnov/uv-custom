@@ -1,0 +1,115 @@
+name: Sync uv Assets
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
+
+concurrency:
+  group: sync-uv-assets
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+      DEFAULT_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_ENDPOINT_URL: ${{ secrets.AWS_ENDPOINT_URL }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate mirror configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}"
+          : "${AWS_ACCESS_KEY_ID:?AWS_ACCESS_KEY_ID is required}"
+          : "${AWS_SECRET_ACCESS_KEY:?AWS_SECRET_ACCESS_KEY is required}"
+          : "${AWS_ENDPOINT_URL:?AWS_ENDPOINT_URL is required}"
+          : "${AWS_REGION:?AWS_REGION is required}"
+          : "${S3_BUCKET:?S3_BUCKET is required}"
+
+      - name: Mirror latest uv release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          stage_dir="$RUNNER_TEMP/uv-stage"
+          uv_tag="$(gh release view --repo astral-sh/uv --json tagName --jq '.tagName')"
+          versioned_dir="$stage_dir/github/astral-sh/uv/releases/download/$uv_tag"
+          latest_dir="$stage_dir/github/astral-sh/uv/releases/download/latest"
+
+          mkdir -p "$versioned_dir" "$latest_dir" "$stage_dir/metadata"
+          gh release download "$uv_tag" --repo astral-sh/uv --dir "$versioned_dir"
+
+          cp "$versioned_dir/uv-installer.sh" "$latest_dir/uv-installer.sh"
+          cp "$versioned_dir/uv-installer.ps1" "$latest_dir/uv-installer.ps1"
+
+          python3 -m scripts.mirrorctl write-uv-latest \
+            --output "$stage_dir/metadata/uv-latest.json" \
+            --public-base-url "$PUBLIC_BASE_URL" \
+            --tag "$uv_tag"
+
+          python3 -m scripts.mirrorctl render-installers \
+            --public-base-url "$PUBLIC_BASE_URL" \
+            --default-index-url "$DEFAULT_INDEX_URL" \
+            --output-dir "$stage_dir"
+
+          aws s3 sync \
+            "$versioned_dir/" \
+            "s3://$S3_BUCKET/github/astral-sh/uv/releases/download/$uv_tag/" \
+            --endpoint-url "$AWS_ENDPOINT_URL" \
+            --cache-control "public, max-age=31536000, immutable"
+
+          aws s3 sync \
+            "$latest_dir/" \
+            "s3://$S3_BUCKET/github/astral-sh/uv/releases/download/latest/" \
+            --endpoint-url "$AWS_ENDPOINT_URL" \
+            --delete \
+            --cache-control "public, max-age=300"
+
+          aws s3 cp \
+            "$stage_dir/metadata/uv-latest.json" \
+            "s3://$S3_BUCKET/metadata/uv-latest.json" \
+            --endpoint-url "$AWS_ENDPOINT_URL" \
+            --cache-control "public, max-age=300"
+
+          aws s3 cp \
+            "$stage_dir/install-cn.sh" \
+            "s3://$S3_BUCKET/install-cn.sh" \
+            --endpoint-url "$AWS_ENDPOINT_URL" \
+            --cache-control "public, max-age=300"
+
+          aws s3 cp \
+            "$stage_dir/install-cn.ps1" \
+            "s3://$S3_BUCKET/install-cn.ps1" \
+            --endpoint-url "$AWS_ENDPOINT_URL" \
+            --cache-control "public, max-age=300"
+
+      - name: Prune old uv versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t tags < <(gh api repos/astral-sh/uv/releases --paginate --jq '.[].tag_name')
+          if [ "${#tags[@]}" -eq 0 ]; then
+            exit 0
+          fi
+          while IFS= read -r stale_tag; do
+            [ -z "$stale_tag" ] && continue
+            aws s3 rm "s3://$S3_BUCKET/github/astral-sh/uv/releases/download/$stale_tag/" --recursive --endpoint-url "$AWS_ENDPOINT_URL"
+          done < <(python3 -m scripts.mirrorctl plan-uv-prune --keep 20 "${tags[@]}")

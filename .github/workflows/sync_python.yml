@@ -1,0 +1,118 @@
+name: Sync uv Python Assets
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "43 */6 * * *"
+
+concurrency:
+  group: sync-uv-python-assets
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_ENDPOINT_URL: ${{ secrets.AWS_ENDPOINT_URL }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate mirror configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}"
+          : "${AWS_ACCESS_KEY_ID:?AWS_ACCESS_KEY_ID is required}"
+          : "${AWS_SECRET_ACCESS_KEY:?AWS_SECRET_ACCESS_KEY is required}"
+          : "${AWS_ENDPOINT_URL:?AWS_ENDPOINT_URL is required}"
+          : "${AWS_REGION:?AWS_REGION is required}"
+          : "${S3_BUCKET:?S3_BUCKET is required}"
+
+      - name: Build rewritten python metadata and stage assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          stage_dir="$RUNNER_TEMP/python-stage"
+          mkdir -p "$stage_dir/metadata"
+
+          curl -LsSf \
+            https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json \
+            -o "$stage_dir/upstream-download-metadata.json"
+
+          python3 -m scripts.mirrorctl build-python-downloads \
+            --input "$stage_dir/upstream-download-metadata.json" \
+            --output "$stage_dir/metadata/python-downloads.json" \
+            --manifest-output "$stage_dir/python-assets.json" \
+            --public-base-url "$PUBLIC_BASE_URL"
+
+          python3 - "$stage_dir/python-assets.json" "$stage_dir" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+import urllib.request
+
+manifest_path = pathlib.Path(sys.argv[1])
+stage_dir = pathlib.Path(sys.argv[2])
+assets = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+for asset in assets:
+    destination = stage_dir / asset["mirror_path"]
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    urllib.request.urlretrieve(asset["source_url"], destination)
+    expected_sha256 = asset.get("sha256")
+    if expected_sha256:
+        digest = hashlib.sha256(destination.read_bytes()).hexdigest()
+        if digest != expected_sha256:
+            raise SystemExit(
+                f"sha256 mismatch for {asset['source_url']}: {digest} != {expected_sha256}"
+            )
+PY
+
+          if [ -d "$stage_dir/python-build-standalone" ]; then
+            aws s3 sync \
+              "$stage_dir/python-build-standalone/" \
+              "s3://$S3_BUCKET/python-build-standalone/" \
+              --endpoint-url "$AWS_ENDPOINT_URL" \
+              --delete \
+              --cache-control "public, max-age=31536000, immutable"
+          fi
+
+          if [ -d "$stage_dir/pypy" ]; then
+            aws s3 sync \
+              "$stage_dir/pypy/" \
+              "s3://$S3_BUCKET/pypy/" \
+              --endpoint-url "$AWS_ENDPOINT_URL" \
+              --delete \
+              --cache-control "public, max-age=31536000, immutable"
+          fi
+
+          if [ -d "$stage_dir/graalpython" ]; then
+            aws s3 sync \
+              "$stage_dir/graalpython/" \
+              "s3://$S3_BUCKET/graalpython/" \
+              --endpoint-url "$AWS_ENDPOINT_URL" \
+              --delete \
+              --cache-control "public, max-age=31536000, immutable"
+          fi
+
+          aws s3 cp \
+            "$stage_dir/metadata/python-downloads.json" \
+            "s3://$S3_BUCKET/metadata/python-downloads.json" \
+            --endpoint-url "$AWS_ENDPOINT_URL" \
+            --cache-control "public, max-age=300"

@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "uv-origin-proxy",
+  "main": "src/index.js",
+  "compatibility_date": "2026-03-16",
+  "account_id": "d39dc6c92d1c4cfde580bf13e946b616",
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "uv.agentsmirror.com/*",
+      "zone_name": "agentsmirror.com"
+    }
+  ],
+  "vars": {
+    "ORIGIN_BASE_URL": "https://20830-uv-custom.s3.jwanfs.com"
+  }
+}
