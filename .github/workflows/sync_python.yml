@@ -22,23 +22,12 @@ jobs:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
-      RCLONE_CONFIG_MIRROR_TYPE: s3
-      RCLONE_CONFIG_MIRROR_PROVIDER: Other
-      RCLONE_CONFIG_MIRROR_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      RCLONE_CONFIG_MIRROR_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      RCLONE_CONFIG_MIRROR_ENDPOINT: ${{ secrets.AWS_ENDPOINT_URL }}
-      RCLONE_CONFIG_MIRROR_REGION: ${{ secrets.AWS_REGION }}
-      RCLONE_CONFIG_MIRROR_FORCE_PATH_STYLE: "true"
-      RCLONE_TRANSFERS: "1"
-      RCLONE_CHECKERS: "1"
-      RCLONE_S3_UPLOAD_CONCURRENCY: "1"
-      RCLONE_S3_CHUNK_SIZE: "128Mi"
-      RCLONE_RETRIES: "20"
-      RCLONE_LOW_LEVEL_RETRIES: "20"
-      RCLONE_RETRIES_SLEEP: "10s"
-      RCLONE_TPSLIMIT: "0.5"
-      RCLONE_TPSLIMIT_BURST: "1"
-      RCLONE_STATS: "20s"
+      MIRROR_ENABLE_MULTIPART: "false"
+      MIRROR_MULTIPART_THRESHOLD_BYTES: "268435456"
+      MIRROR_PART_SIZE_BYTES: "134217728"
+      MIRROR_MAX_ATTEMPTS: "24"
+      MIRROR_BACKOFF_SECONDS: "5"
+      MIRROR_REQUEST_INTERVAL_SECONDS: "2"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -48,12 +37,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install rclone
+      - name: Install upload dependencies
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends rclone
+          python3 -m pip install --disable-pip-version-check boto3
 
       - name: Validate mirror configuration
         shell: bash
@@ -109,27 +97,30 @@ jobs:
           PY
 
           if [ -d "$stage_dir/python-build-standalone" ]; then
-            RCLONE_CACHE_CONTROL="public, max-age=31536000, immutable" \
-            bash scripts/rclone_s3_mirror.sh sync-dir \
-              "$stage_dir/python-build-standalone/" \
-              "python-build-standalone/"
+            python3 -m scripts.mirrorctl sync-dir-with-state \
+              --local-dir "$stage_dir/python-build-standalone" \
+              --prefix "python-build-standalone" \
+              --state-key "state/python-build-standalone.json" \
+              --cache-control "public, max-age=31536000, immutable"
           fi
 
           if [ -d "$stage_dir/pypy" ]; then
-            RCLONE_CACHE_CONTROL="public, max-age=31536000, immutable" \
-            bash scripts/rclone_s3_mirror.sh sync-dir \
-              "$stage_dir/pypy/" \
-              "pypy/"
+            python3 -m scripts.mirrorctl sync-dir-with-state \
+              --local-dir "$stage_dir/pypy" \
+              --prefix "pypy" \
+              --state-key "state/pypy.json" \
+              --cache-control "public, max-age=31536000, immutable"
           fi
 
           if [ -d "$stage_dir/graalpython" ]; then
-            RCLONE_CACHE_CONTROL="public, max-age=31536000, immutable" \
-            bash scripts/rclone_s3_mirror.sh sync-dir \
-              "$stage_dir/graalpython/" \
-              "graalpython/"
+            python3 -m scripts.mirrorctl sync-dir-with-state \
+              --local-dir "$stage_dir/graalpython" \
+              --prefix "graalpython" \
+              --state-key "state/graalpython.json" \
+              --cache-control "public, max-age=31536000, immutable"
           fi
 
-          RCLONE_CACHE_CONTROL="public, max-age=300" \
-          bash scripts/rclone_s3_mirror.sh copy-file \
-            "$stage_dir/metadata/python-downloads.json" \
-            "metadata/python-downloads.json"
+          python3 -m scripts.mirrorctl upload-file \
+            --local-path "$stage_dir/metadata/python-downloads.json" \
+            --key "metadata/python-downloads.json" \
+            --cache-control "public, max-age=300"

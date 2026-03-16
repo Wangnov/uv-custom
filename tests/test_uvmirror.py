@@ -1,15 +1,57 @@
+import pathlib
+import tempfile
 import unittest
 
 from uvmirror.installers import render_installers
 from uvmirror.metadata import (
+    build_state_manifest,
+    diff_stale_keys,
     keep_latest_runtime_builds,
     mirror_path_for_python_download_url,
     rewrite_python_download_url,
 )
+from uvmirror.s3_upload import S3MirrorUploader
 from uvmirror.uv_releases import prune_uv_tags
 
 
 class MetadataTests(unittest.TestCase):
+    def test_build_state_manifest_sorts_and_wraps_keys(self) -> None:
+        manifest = build_state_manifest(
+            [
+                "python-build-standalone/releases/download/20260310/b.tar.zst",
+                "python-build-standalone/releases/download/20260310/a.tar.zst",
+            ]
+        )
+
+        self.assertEqual(
+            manifest,
+            {
+                "keys": [
+                    "python-build-standalone/releases/download/20260310/a.tar.zst",
+                    "python-build-standalone/releases/download/20260310/b.tar.zst",
+                ]
+            },
+        )
+
+    def test_diff_stale_keys_returns_removed_keys_only(self) -> None:
+        stale = diff_stale_keys(
+            previous_manifest={
+                "keys": [
+                    "python-build-standalone/releases/download/20260303/old.tar.zst",
+                    "python-build-standalone/releases/download/20260310/current.tar.zst",
+                ]
+            },
+            current_keys=[
+                "python-build-standalone/releases/download/20260310/current.tar.zst",
+                "metadata/python-downloads.json",
+            ],
+        )
+
+        self.assertEqual(
+            stale,
+            ["python-build-standalone/releases/download/20260303/old.tar.zst"],
+        )
+
     def test_keep_latest_runtime_builds_selects_latest_per_runtime_name(self) -> None:
         entries = [
             {
@@ -115,6 +157,9 @@ class InstallerTests(unittest.TestCase):
 
         self.assertIn("UV_INSTALLER_GITHUB_BASE_URL", rendered.shell)
         self.assertIn("https://uv.example.com/github", rendered.shell)
+        self.assertIn("UV_PYTHON_INSTALL_MIRROR", rendered.shell)
+        self.assertIn("UV_PYTHON_DOWNLOADS_JSON_URL", rendered.shell)
+        self.assertIn("UV_PYPY_INSTALL_MIRROR", rendered.shell)
         self.assertIn("UV_DEFAULT_INDEX", rendered.shell)
         self.assertIn("https://pypi.tuna.tsinghua.edu.cn/simple", rendered.shell)
         self.assertIn(
@@ -130,6 +175,14 @@ class InstallerTests(unittest.TestCase):
             'python-install-mirror = "%s/python-build-standalone/releases/download"\\n',
             rendered.shell,
         )
+        self.assertIn(
+            'python-downloads-json-url = "%s/metadata/python-downloads.json"\\n',
+            rendered.shell,
+        )
+        self.assertIn(
+            'pypy-install-mirror = "%s/pypy"\\n',
+            rendered.shell,
+        )
         self.assertNotIn(
             'curl -LsSf "$PUBLIC_BASE_URL/github/astral-sh/uv/releases/download/latest/uv-installer.sh" | env UV_INSTALLER_GITHUB_BASE_URL="$PUBLIC_BASE_URL/github" sh',
             rendered.shell,
@@ -141,6 +194,18 @@ class InstallerTests(unittest.TestCase):
             '$env:UV_INSTALLER_GITHUB_BASE_URL = "$PublicBaseUrl/github"',
             rendered.powershell,
         )
+        self.assertIn(
+            '$env:UV_PYTHON_INSTALL_MIRROR = "$PublicBaseUrl/python-build-standalone/releases/download"',
+            rendered.powershell,
+        )
+        self.assertIn(
+            '$env:UV_PYTHON_DOWNLOADS_JSON_URL = "$PublicBaseUrl/metadata/python-downloads.json"',
+            rendered.powershell,
+        )
+        self.assertIn(
+            '$env:UV_PYPY_INSTALL_MIRROR = "$PublicBaseUrl/pypy"',
+            rendered.powershell,
+        )
         self.assertLess(
             rendered.powershell.index(
                 '$env:UV_INSTALLER_GITHUB_BASE_URL = "$PublicBaseUrl/github"'
@@ -149,6 +214,218 @@ class InstallerTests(unittest.TestCase):
                 'irm "$PublicBaseUrl/github/astral-sh/uv/releases/download/latest/uv-installer.ps1" | iex'
             ),
         )
+
+
+class FakeBody:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return self._payload
+
+
+class FakeRetryableError(Exception):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"status {status_code}")
+        self.response = {"ResponseMetadata": {"HTTPStatusCode": status_code}}
+
+
+class FakeS3Client:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.fail_put_attempts = 0
+        self.fail_create_multipart_attempts = 0
+        self.get_payload: bytes | None = None
+
+    def put_object(self, **kwargs):
+        self.calls.append(("put_object", kwargs))
+        if self.fail_put_attempts > 0:
+            self.fail_put_attempts -= 1
+            raise FakeRetryableError(403)
+        return {}
+
+    def create_multipart_upload(self, **kwargs):
+        self.calls.append(("create_multipart_upload", kwargs))
+        if self.fail_create_multipart_attempts > 0:
+            self.fail_create_multipart_attempts -= 1
+            raise FakeRetryableError(403)
+        return {"UploadId": "upload-1"}
+
+    def upload_part(self, **kwargs):
+        self.calls.append(("upload_part", kwargs))
+        return {"ETag": f"etag-{kwargs['PartNumber']}"}
+
+    def complete_multipart_upload(self, **kwargs):
+        self.calls.append(("complete_multipart_upload", kwargs))
+        return {}
+
+    def abort_multipart_upload(self, **kwargs):
+        self.calls.append(("abort_multipart_upload", kwargs))
+        return {}
+
+    def get_object(self, **kwargs):
+        self.calls.append(("get_object", kwargs))
+        if self.get_payload is None:
+            raise FileNotFoundError("missing")
+        return {"Body": FakeBody(self.get_payload)}
+
+    def delete_object(self, **kwargs):
+        self.calls.append(("delete_object", kwargs))
+        return {}
+
+
+class UploadTests(unittest.TestCase):
+    def test_sync_directory_with_state_deletes_only_stale_keys(self) -> None:
+        client = FakeS3Client()
+        client.get_payload = (
+            b'{\n  "keys": [\n'
+            b'    "python-build-standalone/releases/download/20260303/old.tar.zst",\n'
+            b'    "python-build-standalone/releases/download/20260310/current.tar.zst"\n'
+            b"  ]\n}\n"
+        )
+        uploader = S3MirrorUploader(
+            client=client,
+            bucket="bucket",
+            multipart_threshold=64,
+            part_size=4,
+            max_attempts=1,
+            sleep=lambda _: None,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            current = root / "current.tar.zst"
+            current.write_bytes(b"data")
+
+            uploader.sync_directory_with_state(
+                local_dir=root,
+                remote_prefix="python-build-standalone/releases/download/20260310",
+                cache_control="public, max-age=31536000, immutable",
+                state_key="state/python-build-standalone.json",
+            )
+
+        self.assertEqual(
+            [name for name, _ in client.calls],
+            ["get_object", "put_object", "put_object", "delete_object"],
+        )
+        self.assertEqual(
+            client.calls[-1][1]["Key"],
+            "python-build-standalone/releases/download/20260303/old.tar.zst",
+        )
+
+    def test_small_file_uses_put_object_only(self) -> None:
+        client = FakeS3Client()
+        uploader = S3MirrorUploader(
+            client=client,
+            bucket="bucket",
+            multipart_threshold=64,
+            part_size=4,
+            max_attempts=1,
+            sleep=lambda _: None,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "installer.sh"
+            path.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+
+            uploader.upload_file(
+                local_path=path,
+                key="github/astral-sh/uv/releases/download/latest/uv-installer.sh",
+                cache_control="public, max-age=300",
+            )
+
+        self.assertEqual([name for name, _ in client.calls], ["put_object"])
+        self.assertEqual(client.calls[0][1]["CacheControl"], "public, max-age=300")
+        self.assertEqual(client.calls[0][1]["ContentType"], "application/x-sh")
+
+    def test_large_file_uses_serial_multipart_upload(self) -> None:
+        client = FakeS3Client()
+        uploader = S3MirrorUploader(
+            client=client,
+            bucket="bucket",
+            multipart_threshold=4,
+            part_size=3,
+            max_attempts=1,
+            sleep=lambda _: None,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "asset.bin"
+            path.write_bytes(b"abcdefgh")
+
+            uploader.upload_file(
+                local_path=path,
+                key="python-build-standalone/releases/download/20260310/asset.bin",
+                cache_control="public, max-age=31536000, immutable",
+            )
+
+        self.assertEqual(
+            [name for name, _ in client.calls],
+            [
+                "create_multipart_upload",
+                "upload_part",
+                "upload_part",
+                "upload_part",
+                "complete_multipart_upload",
+            ],
+        )
+        self.assertEqual(
+            [call[1]["PartNumber"] for call in client.calls if call[0] == "upload_part"],
+            [1, 2, 3],
+        )
+
+    def test_multipart_access_denied_falls_back_to_streaming_put_object(self) -> None:
+        client = FakeS3Client()
+        client.fail_create_multipart_attempts = 1
+        uploader = S3MirrorUploader(
+            client=client,
+            bucket="bucket",
+            multipart_threshold=4,
+            part_size=3,
+            max_attempts=3,
+            sleep=lambda _: None,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "asset.bin"
+            path.write_bytes(b"abcdefgh")
+
+            uploader.upload_file(
+                local_path=path,
+                key="python-build-standalone/releases/download/20260310/asset.bin",
+                cache_control="public, max-age=31536000, immutable",
+            )
+
+        self.assertEqual(
+            [name for name, _ in client.calls],
+            ["create_multipart_upload", "put_object"],
+        )
+
+    def test_put_object_retries_before_succeeding(self) -> None:
+        client = FakeS3Client()
+        client.fail_put_attempts = 2
+        sleeps: list[float] = []
+        uploader = S3MirrorUploader(
+            client=client,
+            bucket="bucket",
+            multipart_threshold=8,
+            part_size=4,
+            max_attempts=3,
+            sleep=sleeps.append,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "metadata.json"
+            path.write_text("{}\n", encoding="utf-8")
+
+            uploader.upload_file(
+                local_path=path,
+                key="metadata/uv-latest.json",
+                cache_control="public, max-age=300",
+            )
+
+        self.assertEqual([name for name, _ in client.calls], ["put_object", "put_object", "put_object"])
+        self.assertEqual(sleeps, [1.0, 2.0])
 
 
 if __name__ == "__main__":

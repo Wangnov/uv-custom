@@ -4,31 +4,32 @@
 [![Python Sync](https://github.com/Wangnov/uv-custom/actions/workflows/sync_python.yml/badge.svg)](https://github.com/Wangnov/uv-custom/actions/workflows/sync_python.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-这个仓库不再做 GitHub / Gitee Release 二次发布，而是通过 GitHub Actions 将 `uv` 相关资产同步到一个位于中国大陆的 S3 兼容对象存储中，作为公益镜像源使用。
+这个仓库用于把 `uv` 相关资产同步到位于中国大陆的 S3 兼容对象存储，并通过 `uv.agentsmirror.com` 对外分发，服务公益性质的国内下载场景。
 
-默认设计目标是：
+## 镜像范围
 
-- 镜像 `uv` standalone installer、各平台二进制与校验文件
-- 镜像 `uv python` 所需的最新运行时资产
-  目前覆盖 `CPython`、`PyPy`、`GraalPy`
-- 提供一个国内预设安装入口
-  安装后自动写入：
-  - `python-install-mirror`
-  - `python-downloads-json-url`
-  - `UV_INSTALLER_GITHUB_BASE_URL`
-  - `UV_DEFAULT_INDEX`
+- 官方 `uv` release 资产
+- 官方 `uv-installer.sh` / `uv-installer.ps1`
+- `uv python` 需要的最新运行时资产
+  当前覆盖 `CPython`、`PyPy`、`GraalPy`
+- 国内预设安装入口
+  当前生成：
+  - `/install-cn.sh`
+  - `/install-cn.ps1`
+  - `/metadata/uv-latest.json`
+  - `/metadata/python-downloads.json`
 
 ## 公开访问模型
 
-本项目只提供静态对象访问，不提供 HTML 站点。
+本项目只提供对象分发，不提供 HTML 站点。
 
-推荐公开基地址通过仓库变量 `PUBLIC_BASE_URL` 注入，例如：
+推荐把仓库变量 `PUBLIC_BASE_URL` 设为：
 
 ```text
 https://uv.agentsmirror.com
 ```
 
-镜像目录约定如下：
+镜像路径约定如下：
 
 ```text
 /github/astral-sh/uv/releases/download/<tag>/...
@@ -43,9 +44,9 @@ https://uv.agentsmirror.com
 /install-cn.ps1
 ```
 
-## 用户安装
+## 安装入口
 
-以下命令假定你的公开地址是 `https://uv.agentsmirror.com`。
+以下命令假定公开地址为 `https://uv.agentsmirror.com`。
 
 ### macOS / Linux
 
@@ -59,20 +60,28 @@ curl -LsSf https://uv.agentsmirror.com/install-cn.sh | sh
 powershell -ExecutionPolicy Bypass -c "irm https://uv.agentsmirror.com/install-cn.ps1 | iex"
 ```
 
-安装脚本会做四件事：
+`install-cn` 不会暴力改写官方 installer。本仓库的做法是：
 
-1. 通过镜像中的官方 installer 安装 `uv`
-2. 在用户级 `uv.toml` 中写入：
-   - `python-install-mirror`
-   - `python-downloads-json-url`
-3. 在 shell profile / PowerShell profile 中持久化：
-   - `UV_INSTALLER_GITHUB_BASE_URL`
-   - `UV_DEFAULT_INDEX`
-4. 如果已有 `uv.toml`，会先备份，再只更新受管键
+- 直接分发官方 `uv-installer.sh` / `uv-installer.ps1`
+- 通过 `UV_INSTALLER_GITHUB_BASE_URL` 让官方 installer 改从镜像取 `uv` 二进制
+- 在安装完成后再写入国内镜像相关的 `uv.toml` 与环境变量
+
+安装脚本会自动写入这些配置：
+
+- `python-install-mirror`
+- `python-downloads-json-url`
+- `pypy-install-mirror`
+- `UV_INSTALLER_GITHUB_BASE_URL`
+- `UV_PYTHON_INSTALL_MIRROR`
+- `UV_PYTHON_DOWNLOADS_JSON_URL`
+- `UV_PYPY_INSTALL_MIRROR`
+- `UV_DEFAULT_INDEX`
+
+如果已有 `uv.toml`，脚本会先备份，再只更新受管键。
 
 ### 关于 `uv self update`
 
-为了让后续 `uv self update` 继续走镜像，安装脚本会在 profile 中写入 `UV_INSTALLER_GITHUB_BASE_URL`。如果你不想保留这个行为，可以手动删除脚本写入的受管块：
+为了让后续 `uv self update` 继续走镜像，profile 中会写入：
 
 ```text
 # >>> uv mirror managed block >>>
@@ -80,7 +89,9 @@ powershell -ExecutionPolicy Bypass -c "irm https://uv.agentsmirror.com/install-c
 # <<< uv mirror managed block <<<
 ```
 
-## 默认 PyPI 与切换方式
+如果你不想保留镜像环境变量，可以删除这段受管块。
+
+## 默认 PyPI
 
 默认写入的是清华源：
 
@@ -88,22 +99,34 @@ powershell -ExecutionPolicy Bypass -c "irm https://uv.agentsmirror.com/install-c
 https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-如果你更想使用阿里源，可以在安装完成后把 profile 中的 `UV_DEFAULT_INDEX` 改成：
+如果你更想使用阿里源，可以把 `UV_DEFAULT_INDEX` 改成：
 
 ```text
 https://mirrors.aliyun.com/pypi/simple
 ```
 
-或直接删除受管块，自行管理 `UV_DEFAULT_INDEX`。
+## 为什么不用 `aws s3 sync` / `rclone`
+
+对 IHEP 这类 S3 兼容网关，本项目已经实测踩过三类坑：
+
+- `aws s3api` / `aws s3 sync` 会发出 `Expect: 100-continue`、`Transfer-Encoding: chunked`、`Content-Encoding: aws-chunked` 和 trailer checksum，这类请求会被网关直接拒绝
+- `CreateMultipartUpload` 会直接返回 `AccessDenied`
+- `rclone` 即使把并发和速率压得很低，仍会频繁触发目标端 metadata/hash/mtime/HEAD 探测，最终也会掉进长时间 `403`
+
+当前仓库已经切换为项目内 Python 低层上传器，只做最小必要操作：
+
+- 单文件流式 `put_object`
+- Python 资产通过状态清单显式删除 stale keys
+- GitHub Actions 默认关闭 multipart
+- 请求节流和指数退避都在项目内可控
 
 ## 仓库变量与 Secrets
 
-### 必填仓库变量
+### GitHub Actions vars
 
 - `PUBLIC_BASE_URL`
-  公开访问的 HTTPS 基地址，不要带结尾 `/`
 
-### 必填 Secrets
+### GitHub Actions secrets
 
 - `AWS_ACCESS_KEY_ID`
 - `AWS_SECRET_ACCESS_KEY`
@@ -111,48 +134,55 @@ https://mirrors.aliyun.com/pypi/simple
 - `AWS_REGION`
 - `S3_BUCKET`
 
+### GitHub Actions 可选 secret
+
+- `AWS_SESSION_TOKEN`
+
+## Cloudflare Worker
+
+`cloudflare/uv-origin-proxy` 里的 Worker 会对私有 IHEP S3 做 AWS SigV4 代签名回源，因此公开下载不依赖桶匿名读。
+
+### Worker vars
+
+- `S3_ORIGIN_ENDPOINT`
+  例如 `https://fgws3-ocloud.ihep.ac.cn`
+- `S3_BUCKET`
+- `S3_REGION`
+
+### Worker secrets
+
+- `S3_ACCESS_KEY_ID`
+- `S3_SECRET_ACCESS_KEY`
+
+### Worker 可选 secret
+
+- `S3_SESSION_TOKEN`
+
 ## 工作流说明
 
 ### `sync_uv.yml`
 
 - 每小时轮询 `astral-sh/uv`
-- 下载最新 release 的全部资产
-- 通过 `rclone` 的 S3 后端上传到：
+- 下载最新 release 全部资产
+- 上传到：
   - `/github/astral-sh/uv/releases/download/<tag>/`
   - `/github/astral-sh/uv/releases/download/latest/`
-- 生成：
+- 生成并上传：
   - `/metadata/uv-latest.json`
   - `/install-cn.sh`
   - `/install-cn.ps1`
-- 不再在主链路里删除旧版本目录，优先保证同步稳定性
 
 ### `sync_python.yml`
 
-- 每 6 小时拉取一次 `uv` 上游的 `download-metadata.json`
-- 针对 `CPython`、`PyPy`、`GraalPy` 各自只保留最新 build
-- 重写 URL 到你的公开基地址
-- 通过 `rclone sync` 上传并清理旧资产：
+- 每 6 小时拉取一次上游 `download-metadata.json`
+- 对 `CPython`、`PyPy`、`GraalPy` 各自只保留最新 build
+- 重写 URL 到你的公开域名
+- 下载这些最新资产到 runner
+- 用状态清单上传并清理：
   - `/python-build-standalone/...`
   - `/pypy/...`
   - `/graalpython/...`
   - `/metadata/python-downloads.json`
-
-## 为什么不用 `aws s3 sync`
-
-对 IHEP 这类 S3 兼容网关，`aws s3 sync` 在高层 transfer manager 模式下会并发触发 `PutObject`、`CreateMultipartUpload` 与 `UploadPart`。本项目实测里它会在已经写入部分对象后，继续混合报出临时性的 `AccessDenied`。
-
-当前仓库改为使用文档中同样支持的 `rclone` S3 后端，并且显式限制：
-
-- `--transfers 1`
-- `--checkers 1`
-- `--s3-upload-concurrency 1`
-- `--s3-chunk-size 128Mi`
-- `--tpslimit 0.5`
-- `--retries 20`
-- `--low-level-retries 20`
-- `--retries-sleep 10s`
-
-这套参数更适合当前桶网关的节流行为，能把“短时间临时拒绝”转成可恢复的重试，而不是让 workflow 直接失败。
 
 ## 本地验证
 
@@ -162,7 +192,7 @@ https://mirrors.aliyun.com/pypi/simple
 python3 -m unittest tests/test_uvmirror.py -v
 ```
 
-### 本地生成安装脚本与元数据
+### 本地生成安装脚本
 
 ```sh
 python3 -m scripts.mirrorctl render-installers \
@@ -171,12 +201,23 @@ python3 -m scripts.mirrorctl render-installers \
   --output-dir ./dist
 ```
 
+### 本地生成 Python 元数据
+
 ```sh
 python3 -m scripts.mirrorctl build-python-downloads \
   --input ./download-metadata.json \
   --output ./dist/metadata/python-downloads.json \
   --manifest-output ./dist/python-assets.json \
   --public-base-url https://uv.agentsmirror.com
+```
+
+### 部署 Worker
+
+```sh
+cd cloudflare/uv-origin-proxy
+npx wrangler secret put S3_ACCESS_KEY_ID
+npx wrangler secret put S3_SECRET_ACCESS_KEY
+npx wrangler deploy
 ```
 
 ## 致谢

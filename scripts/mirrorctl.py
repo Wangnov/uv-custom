@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 
 from uvmirror.installers import render_installers
@@ -11,6 +12,7 @@ from uvmirror.metadata import (
     build_rewritten_python_metadata,
     keep_latest_runtime_builds,
 )
+from uvmirror.s3_upload import S3MirrorUploader
 from uvmirror.uv_releases import prune_uv_tags
 
 
@@ -63,6 +65,62 @@ def write_uv_latest(output_path: pathlib.Path, public_base_url: str, tag: str) -
     )
 
 
+def _required_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise SystemExit(f"{name} is required")
+    return value
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def build_uploader_from_env() -> S3MirrorUploader:
+    try:
+        import boto3
+        from botocore.config import Config
+    except ImportError as exc:  # pragma: no cover - exercised in workflow
+        raise SystemExit("boto3 and botocore are required for upload commands") from exc
+
+    access_key_id = _required_env("AWS_ACCESS_KEY_ID")
+    secret_access_key = _required_env("AWS_SECRET_ACCESS_KEY")
+    endpoint_url = _required_env("AWS_ENDPOINT_URL")
+    region = os.environ.get("AWS_REGION") or _required_env("AWS_DEFAULT_REGION")
+    bucket = _required_env("S3_BUCKET")
+
+    session = boto3.session.Session(
+        aws_access_key_id=access_key_id,
+        aws_secret_access_key=secret_access_key,
+        aws_session_token=os.environ.get("AWS_SESSION_TOKEN"),
+        region_name=region,
+    )
+    client = session.client(
+        "s3",
+        endpoint_url=endpoint_url,
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+            retries={"max_attempts": 0},
+        ),
+    )
+    return S3MirrorUploader(
+        client=client,
+        bucket=bucket,
+        multipart_threshold=int(
+            os.environ.get("MIRROR_MULTIPART_THRESHOLD_BYTES", str(256 * 1024 * 1024))
+        ),
+        part_size=int(os.environ.get("MIRROR_PART_SIZE_BYTES", str(128 * 1024 * 1024))),
+        enable_multipart=_env_bool("MIRROR_ENABLE_MULTIPART", True),
+        max_attempts=int(os.environ.get("MIRROR_MAX_ATTEMPTS", "24")),
+        backoff_seconds=float(os.environ.get("MIRROR_BACKOFF_SECONDS", "5")),
+        request_interval=float(os.environ.get("MIRROR_REQUEST_INTERVAL_SECONDS", "2")),
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -87,6 +145,22 @@ def main() -> None:
     plan_uv_prune_parser.add_argument("--keep", type=int, required=True)
     plan_uv_prune_parser.add_argument("tags", nargs="+")
 
+    upload_file_parser = subparsers.add_parser("upload-file")
+    upload_file_parser.add_argument("--local-path", type=pathlib.Path, required=True)
+    upload_file_parser.add_argument("--key", required=True)
+    upload_file_parser.add_argument("--cache-control", required=True)
+
+    upload_dir_parser = subparsers.add_parser("upload-dir")
+    upload_dir_parser.add_argument("--local-dir", type=pathlib.Path, required=True)
+    upload_dir_parser.add_argument("--prefix", required=True)
+    upload_dir_parser.add_argument("--cache-control", required=True)
+
+    sync_dir_parser = subparsers.add_parser("sync-dir-with-state")
+    sync_dir_parser.add_argument("--local-dir", type=pathlib.Path, required=True)
+    sync_dir_parser.add_argument("--prefix", required=True)
+    sync_dir_parser.add_argument("--cache-control", required=True)
+    sync_dir_parser.add_argument("--state-key", required=True)
+
     args = parser.parse_args()
 
     if args.command == "build-python-downloads":
@@ -109,6 +183,31 @@ def main() -> None:
     if args.command == "plan-uv-prune":
         for tag in prune_uv_tags(args.tags, args.keep):
             print(tag)
+        return
+
+    if args.command == "upload-file":
+        build_uploader_from_env().upload_file(
+            local_path=args.local_path,
+            key=args.key,
+            cache_control=args.cache_control,
+        )
+        return
+
+    if args.command == "upload-dir":
+        build_uploader_from_env().upload_directory(
+            local_dir=args.local_dir,
+            remote_prefix=args.prefix,
+            cache_control=args.cache_control,
+        )
+        return
+
+    if args.command == "sync-dir-with-state":
+        build_uploader_from_env().sync_directory_with_state(
+            local_dir=args.local_dir,
+            remote_prefix=args.prefix,
+            cache_control=args.cache_control,
+            state_key=args.state_key,
+        )
         return
 
 

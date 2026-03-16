@@ -39,6 +39,19 @@ def keep_latest_runtime_builds(entries: Iterable[dict]) -> list[dict]:
     return selected
 
 
+def build_state_manifest(keys: Iterable[str]) -> dict[str, list[str]]:
+    return {"keys": sorted(set(keys))}
+
+
+def diff_stale_keys(
+    previous_manifest: dict[str, list[str]] | None,
+    current_keys: Iterable[str],
+) -> list[str]:
+    previous_keys = set((previous_manifest or {}).get("keys", []))
+    current_key_set = set(current_keys)
+    return sorted(previous_keys - current_key_set)
+
+
 def mirror_path_for_python_download_url(url: str) -> str:
     if url.startswith(PYTHON_BUILD_STANDALONE_PREFIX):
         return f"python-build-standalone/releases/download/{url[len(PYTHON_BUILD_STANDALONE_PREFIX):]}"
