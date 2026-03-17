@@ -117,3 +117,25 @@ jobs:
             --local-path "$stage_dir/install-cn.ps1" \
             --key "$(with_prefix "install-cn.ps1")" \
             --cache-control "public, max-age=300"
+
+      - name: Deploy Cloudflare Worker with current S3 credentials
+        shell: bash
+        env:
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_EMAIL:?CLOUDFLARE_EMAIL is required}"
+          : "${CLOUDFLARE_API_KEY:?CLOUDFLARE_API_KEY is required}"
+
+          cd cloudflare/uv-origin-proxy
+          printf '%s' "$AWS_ACCESS_KEY_ID" | npx wrangler secret put S3_ACCESS_KEY_ID
+          printf '%s' "$AWS_SECRET_ACCESS_KEY" | npx wrangler secret put S3_SECRET_ACCESS_KEY
+
+          if [ -n "${AWS_SESSION_TOKEN:-}" ]; then
+            printf '%s' "$AWS_SESSION_TOKEN" | npx wrangler secret put S3_SESSION_TOKEN
+          else
+            npx wrangler secret delete S3_SESSION_TOKEN || true
+          fi
+
+          npx wrangler deploy

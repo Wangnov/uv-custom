@@ -135,6 +135,8 @@ https://mirrors.aliyun.com/pypi/simple
 - `AWS_ENDPOINT_URL`
 - `AWS_REGION`
 - `S3_BUCKET`
+- `CLOUDFLARE_EMAIL`
+- `CLOUDFLARE_API_KEY`
 
 ### GitHub Actions 可选 secret
 
@@ -193,6 +195,7 @@ https://mirrors.aliyun.com/pypi/simple
   - `/metadata/uv-latest.json`
   - `/install-cn.sh`
   - `/install-cn.ps1`
+- 同步成功后会把当前同一组 AWS 凭证刷新进 Cloudflare Worker，避免“同步侧”和“分发侧”使用不同身份
 
 ### `sync_python.yml`
 
@@ -205,6 +208,11 @@ https://mirrors.aliyun.com/pypi/simple
   - `/pypy/...`
   - `/graalpython/...`
   - `/metadata/python-downloads.json`
+
+### `deploy_worker.yml`
+
+- 手动把当前仓库里的 AWS secret 同步到 Cloudflare Worker secrets 并重新部署
+- 适合在用户刚改完 AWS secret、但还不想完整重跑同步时单独执行
 
 ## 本地验证
 
