@@ -1,16 +1,7 @@
 const SERVICE = "s3";
 const ALGORITHM = "AWS4-HMAC-SHA256";
-const EMPTY_PAYLOAD_SHA256 =
-  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const UNSIGNED_PAYLOAD = "UNSIGNED-PAYLOAD";
 const ALLOWED_METHODS = new Set(["GET", "HEAD"]);
-const FORWARDED_REQUEST_HEADERS = [
-  "if-match",
-  "if-modified-since",
-  "if-none-match",
-  "if-range",
-  "if-unmodified-since",
-  "range",
-];
 const REQUIRED_ENV_KEYS = [
   "S3_ORIGIN_ENDPOINT",
   "S3_BUCKET",
@@ -18,6 +9,7 @@ const REQUIRED_ENV_KEYS = [
   "S3_ACCESS_KEY_ID",
   "S3_SECRET_ACCESS_KEY",
 ];
+const DEFAULT_PRESIGN_TTL_SECONDS = 600;
 const textEncoder = new TextEncoder();
 
 export default {
@@ -42,40 +34,18 @@ export default {
     }
 
     const requestUrl = new URL(request.url);
-    const originUrl = buildOriginUrl(config.originEndpoint, config.bucket, requestUrl);
-    const upstreamMethod = request.method === "HEAD" ? "GET" : request.method;
-    const signingHeaders = await buildSigningHeaders(
-      upstreamMethod,
-      originUrl,
+    const signedUrl = await buildPresignedUrl(
+      request.method,
+      requestUrl,
       config,
     );
 
-    const upstreamHeaders = new Headers();
-    for (const [name, value] of Object.entries(signingHeaders)) {
-      upstreamHeaders.set(name, value);
-    }
-    for (const headerName of FORWARDED_REQUEST_HEADERS) {
-      const headerValue = request.headers.get(headerName);
-      if (headerValue) {
-        upstreamHeaders.set(headerName, headerValue);
-      }
-    }
-
-    const upstreamRequest = new Request(originUrl.toString(), {
-      method: upstreamMethod,
-      headers: upstreamHeaders,
-      redirect: "manual",
-      signal: request.signal,
-    });
-
-    const response = await fetch(upstreamRequest);
-    const headers = new Headers(response.headers);
-    headers.delete("alt-svc");
-
-    return new Response(request.method === "HEAD" ? null : response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
+    return new Response(null, {
+      status: 307,
+      headers: {
+        "cache-control": "no-store",
+        location: signedUrl.toString(),
+      },
     });
   },
 };
@@ -89,14 +59,32 @@ function getConfig(env) {
   return {
     accessKeyId: env.S3_ACCESS_KEY_ID,
     bucket: env.S3_BUCKET,
+    keyPrefix: normalizeKeyPrefix(env.S3_KEY_PREFIX || ""),
     originEndpoint: env.S3_ORIGIN_ENDPOINT,
+    presignTtlSeconds: getPresignTtlSeconds(env),
     region: env.S3_REGION,
     secretAccessKey: env.S3_SECRET_ACCESS_KEY,
     sessionToken: env.S3_SESSION_TOKEN || null,
   };
 }
 
-function buildOriginUrl(originEndpoint, bucket, requestUrl) {
+function getPresignTtlSeconds(env) {
+  if (!env.S3_PRESIGN_TTL_SECONDS) {
+    return DEFAULT_PRESIGN_TTL_SECONDS;
+  }
+
+  const parsed = Number.parseInt(env.S3_PRESIGN_TTL_SECONDS, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_PRESIGN_TTL_SECONDS;
+  }
+  return parsed;
+}
+
+function normalizeKeyPrefix(value) {
+  return value.replace(/^\/+|\/+$/g, "");
+}
+
+function buildOriginUrl(originEndpoint, bucket, requestUrl, keyPrefix = "") {
   const originUrl = new URL(originEndpoint);
   const requestPath = requestUrl.pathname.startsWith("/")
     ? requestUrl.pathname
@@ -104,41 +92,48 @@ function buildOriginUrl(originEndpoint, bucket, requestUrl) {
   const basePath = originUrl.pathname === "/"
     ? ""
     : originUrl.pathname.replace(/\/+$/, "");
-
-  originUrl.pathname = `${basePath}/${bucket}${requestPath}`;
+  const prefixPath = keyPrefix ? `/${keyPrefix}` : "";
+  originUrl.pathname = `${basePath}/${bucket}${prefixPath}${requestPath}`;
   originUrl.search = requestUrl.search;
   return originUrl;
 }
 
-async function buildSigningHeaders(method, originUrl, config) {
-  const now = new Date();
+async function buildPresignedUrl(method, requestUrl, config, now = new Date()) {
+  const originUrl = buildOriginUrl(
+    config.originEndpoint,
+    config.bucket,
+    requestUrl,
+    config.keyPrefix,
+  );
   const amzDate = formatAmzDate(now);
   const dateStamp = amzDate.slice(0, 8);
-  const payloadHash = EMPTY_PAYLOAD_SHA256;
+  const signedHeaders = "host";
+  const credentialScope = `${dateStamp}/${config.region}/${SERVICE}/aws4_request`;
 
-  const headersToSign = {
-    host: originUrl.host,
-    "x-amz-content-sha256": payloadHash,
-    "x-amz-date": amzDate,
-  };
-  if (method === "GET") {
-    headersToSign["x-amz-checksum-mode"] = "ENABLED";
-  }
+  originUrl.searchParams.set("X-Amz-Algorithm", ALGORITHM);
+  originUrl.searchParams.set(
+    "X-Amz-Credential",
+    `${config.accessKeyId}/${credentialScope}`,
+  );
+  originUrl.searchParams.set("X-Amz-Date", amzDate);
+  originUrl.searchParams.set(
+    "X-Amz-Expires",
+    String(config.presignTtlSeconds),
+  );
+  originUrl.searchParams.set("X-Amz-SignedHeaders", signedHeaders);
   if (config.sessionToken) {
-    headersToSign["x-amz-security-token"] = config.sessionToken;
+    originUrl.searchParams.set("X-Amz-Security-Token", config.sessionToken);
   }
 
-  const { canonicalHeaders, signedHeaders } = buildCanonicalHeaders(headersToSign);
   const canonicalRequest = [
     method,
     canonicalizePath(originUrl.pathname),
     buildCanonicalQuery(originUrl.searchParams),
-    canonicalHeaders,
+    `host:${originUrl.host}\n`,
     signedHeaders,
-    payloadHash,
+    UNSIGNED_PAYLOAD,
   ].join("\n");
 
-  const credentialScope = `${dateStamp}/${config.region}/${SERVICE}/aws4_request`;
   const stringToSign = [
     ALGORITHM,
     amzDate,
@@ -153,30 +148,8 @@ async function buildSigningHeaders(method, originUrl, config) {
     SERVICE,
   );
   const signature = await hmacHex(signingKey, stringToSign);
-  const authorization =
-    `${ALGORITHM} Credential=${config.accessKeyId}/${credentialScope}, ` +
-    `SignedHeaders=${signedHeaders}, Signature=${signature}`;
-
-  return {
-    authorization,
-    ...headersToSign,
-  };
-}
-
-function buildCanonicalHeaders(headers) {
-  const normalizedEntries = Object.entries(headers)
-    .map(([name, value]) => [
-      name.toLowerCase(),
-      String(value).trim().replace(/\s+/g, " "),
-    ])
-    .sort(([left], [right]) => left.localeCompare(right));
-
-  return {
-    canonicalHeaders: normalizedEntries
-      .map(([name, value]) => `${name}:${value}\n`)
-      .join(""),
-    signedHeaders: normalizedEntries.map(([name]) => name).join(";"),
-  };
+  originUrl.searchParams.set("X-Amz-Signature", signature);
+  return originUrl;
 }
 
 function buildCanonicalQuery(searchParams) {

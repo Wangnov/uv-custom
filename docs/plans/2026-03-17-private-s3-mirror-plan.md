@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 用项目内低层 S3 上传器和 Worker 代签名回源，完成私有 IHEP S3 上的 `uv` 镜像同步与公开安装分发。
+**Goal:** 用项目内低层 S3 上传器和 Worker 预签名跳转，完成私有 IHEP S3 上的 `uv` 镜像同步与公开安装分发。
 
-**Architecture:** 先以 TDD 方式给同步状态与上传清单补测试，再实现 Python 上传器并替换 workflows。之后实现 Worker SigV4 代理，最后做 GitHub Actions 与本机安装验证。
+**Architecture:** 先以 TDD 方式给同步状态与上传清单补测试，再实现 Python 上传器并替换 workflows。之后实现 Worker SigV4 预签名跳转，最后做 GitHub Actions 与本机安装验证。
 
 **Tech Stack:** Python 3.12、unittest、GitHub Actions、Cloudflare Workers、AWS SigV4
 
@@ -72,7 +72,7 @@ Run: `python3 -m unittest tests/test_uvmirror.py -v`
 
 Run: `bash -n scripts/*.sh && ruby -e 'require %q[yaml]; YAML.load_file(%q[.github/workflows/sync_uv.yml]); YAML.load_file(%q[.github/workflows/sync_python.yml])'`
 
-### Task 4: 实现 Worker 代签名回源
+### Task 4: 实现 Worker 预签名跳转
 
 **Files:**
 - Modify: `cloudflare/uv-origin-proxy/src/index.js`
@@ -82,11 +82,13 @@ Run: `bash -n scripts/*.sh && ruby -e 'require %q[yaml]; YAML.load_file(%q[.gith
 
 - 支持 `GET`/`HEAD`
 - 从 env 读取 endpoint、bucket、region、AK、SK
+- 返回 `307` 到预签名 URL，而不是在 Worker 内流式回源
+- 支持可选对象前缀，把公网根路径映射到桶内统一前缀
 
 **Step 2: Deploy and verify**
 
 - 部署 Worker
-- `curl -I https://uv.agentsmirror.com/...` 验证能读到对象
+- `curl -I https://uv.agentsmirror.com/...` 验证返回有效预签名跳转
 
 ### Task 5: 端到端验证
 

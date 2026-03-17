@@ -4,7 +4,7 @@
 [![Python Sync](https://github.com/Wangnov/uv-custom/actions/workflows/sync_python.yml/badge.svg)](https://github.com/Wangnov/uv-custom/actions/workflows/sync_python.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-这个仓库用于把 `uv` 相关资产同步到位于中国大陆的 S3 兼容对象存储，并通过 `uv.agentsmirror.com` 对外分发，服务公益性质的国内下载场景。
+这个仓库用于把 `uv` 相关资产同步到位于中国大陆的 S3 兼容对象存储，并通过 `uv.agentsmirror.com` 作为安装入口，服务公益性质的国内下载场景。
 
 ## 镜像范围
 
@@ -125,6 +125,8 @@ https://mirrors.aliyun.com/pypi/simple
 ### GitHub Actions vars
 
 - `PUBLIC_BASE_URL`
+- `MIRROR_KEY_PREFIX`
+  可选。用于把实际对象写入桶内某个前缀，例如 `mirror`。公网 URL 不变，适合不同 AK/SK 对同一桶对象不可互读时做隔离。
 
 ### GitHub Actions secrets
 
@@ -140,7 +142,23 @@ https://mirrors.aliyun.com/pypi/simple
 
 ## Cloudflare Worker
 
-`cloudflare/uv-origin-proxy` 里的 Worker 会对私有 IHEP S3 做 AWS SigV4 代签名回源，因此公开下载不依赖桶匿名读。
+`cloudflare/uv-origin-proxy` 里的 Worker 不再代理大文件内容，而是为私有 IHEP S3 生成短时效 AWS SigV4 预签名 URL，并返回 `307` 跳转。
+
+这有两个直接好处：
+
+- 大文件流量直接从中国大陆 S3 出口下发，不穿过 Cloudflare Worker
+- 公开访问不依赖桶匿名读，也避开了 Worker 直连回源时的兼容性问题
+
+### 中国访问建议
+
+如果 `uv.agentsmirror.com` 走的是 Cloudflare 代理，国内访问仍然会受 Cloudflare 网络质量影响。
+
+当前这套实现的最佳实践是：
+
+- 用 `uv.agentsmirror.com` 作为安装入口和轻量跳转入口
+- 真实二进制与 Python 运行时包通过预签名 URL 直接从大陆 S3 下载
+
+如果你后续能拿到大陆可直连的自有域名或大陆 CDN，再把 `PUBLIC_BASE_URL` 切过去会更稳；仓库里的对象路径布局不需要改。
 
 ### Worker vars
 
@@ -148,6 +166,10 @@ https://mirrors.aliyun.com/pypi/simple
   例如 `https://fgws3-ocloud.ihep.ac.cn`
 - `S3_BUCKET`
 - `S3_REGION`
+- `S3_PRESIGN_TTL_SECONDS`
+  可选，默认 `600`
+- `S3_KEY_PREFIX`
+  可选。若设置为 `mirror`，则 `https://uv.agentsmirror.com/install-cn.sh` 会被重定向到桶内 `mirror/install-cn.sh`
 
 ### Worker secrets
 

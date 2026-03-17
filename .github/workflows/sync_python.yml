@@ -16,6 +16,7 @@ jobs:
       contents: read
     env:
       PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+      MIRROR_KEY_PREFIX: ${{ vars.MIRROR_KEY_PREFIX }}
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_ENDPOINT_URL: ${{ secrets.AWS_ENDPOINT_URL }}
@@ -59,6 +60,16 @@ jobs:
         run: |
           set -euo pipefail
 
+          key_prefix="${MIRROR_KEY_PREFIX#/}"
+          key_prefix="${key_prefix%/}"
+          with_prefix() {
+            if [ -n "$key_prefix" ]; then
+              printf '%s/%s' "$key_prefix" "$1"
+            else
+              printf '%s' "$1"
+            fi
+          }
+
           stage_dir="$RUNNER_TEMP/python-stage"
           mkdir -p "$stage_dir/metadata"
 
@@ -99,28 +110,28 @@ jobs:
           if [ -d "$stage_dir/python-build-standalone" ]; then
             python3 -m scripts.mirrorctl sync-dir-with-state \
               --local-dir "$stage_dir/python-build-standalone" \
-              --prefix "python-build-standalone" \
-              --state-key "state/python-build-standalone.json" \
+              --prefix "$(with_prefix "python-build-standalone")" \
+              --state-key "$(with_prefix "state/python-build-standalone.json")" \
               --cache-control "public, max-age=31536000, immutable"
           fi
 
           if [ -d "$stage_dir/pypy" ]; then
             python3 -m scripts.mirrorctl sync-dir-with-state \
               --local-dir "$stage_dir/pypy" \
-              --prefix "pypy" \
-              --state-key "state/pypy.json" \
+              --prefix "$(with_prefix "pypy")" \
+              --state-key "$(with_prefix "state/pypy.json")" \
               --cache-control "public, max-age=31536000, immutable"
           fi
 
           if [ -d "$stage_dir/graalpython" ]; then
             python3 -m scripts.mirrorctl sync-dir-with-state \
               --local-dir "$stage_dir/graalpython" \
-              --prefix "graalpython" \
-              --state-key "state/graalpython.json" \
+              --prefix "$(with_prefix "graalpython")" \
+              --state-key "$(with_prefix "state/graalpython.json")" \
               --cache-control "public, max-age=31536000, immutable"
           fi
 
           python3 -m scripts.mirrorctl upload-file \
             --local-path "$stage_dir/metadata/python-downloads.json" \
-            --key "metadata/python-downloads.json" \
+            --key "$(with_prefix "metadata/python-downloads.json")" \
             --cache-control "public, max-age=300"

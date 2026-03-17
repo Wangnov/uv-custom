@@ -14,7 +14,10 @@
   "vars": {
     "S3_ORIGIN_ENDPOINT": "https://fgws3-ocloud.ihep.ac.cn",
     "S3_BUCKET": "20830-uv-custom",
-    "S3_REGION": "us-east-1"
+    "S3_REGION": "us-east-1",
+    "S3_KEY_PREFIX": "mirror",
+    // Optional:
+    // "S3_PRESIGN_TTL_SECONDS": "600"
   }
   // Secrets to configure with `wrangler secret put`:
   // - S3_ACCESS_KEY_ID

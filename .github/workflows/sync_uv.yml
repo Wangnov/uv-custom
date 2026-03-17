@@ -17,6 +17,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+      MIRROR_KEY_PREFIX: ${{ vars.MIRROR_KEY_PREFIX }}
       DEFAULT_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -61,6 +62,16 @@ jobs:
         run: |
           set -euo pipefail
 
+          key_prefix="${MIRROR_KEY_PREFIX#/}"
+          key_prefix="${key_prefix%/}"
+          with_prefix() {
+            if [ -n "$key_prefix" ]; then
+              printf '%s/%s' "$key_prefix" "$1"
+            else
+              printf '%s' "$1"
+            fi
+          }
+
           stage_dir="$RUNNER_TEMP/uv-stage"
           uv_tag="$(gh release view --repo astral-sh/uv --json tagName --jq '.tagName')"
           versioned_dir="$stage_dir/github/astral-sh/uv/releases/download/$uv_tag"
@@ -84,25 +95,25 @@ jobs:
 
           python3 -m scripts.mirrorctl upload-dir \
             --local-dir "$versioned_dir" \
-            --prefix "github/astral-sh/uv/releases/download/$uv_tag" \
+            --prefix "$(with_prefix "github/astral-sh/uv/releases/download/$uv_tag")" \
             --cache-control "public, max-age=31536000, immutable"
 
           python3 -m scripts.mirrorctl upload-dir \
             --local-dir "$latest_dir" \
-            --prefix "github/astral-sh/uv/releases/download/latest" \
+            --prefix "$(with_prefix "github/astral-sh/uv/releases/download/latest")" \
             --cache-control "public, max-age=300"
 
           python3 -m scripts.mirrorctl upload-file \
             --local-path "$stage_dir/metadata/uv-latest.json" \
-            --key "metadata/uv-latest.json" \
+            --key "$(with_prefix "metadata/uv-latest.json")" \
             --cache-control "public, max-age=300"
 
           python3 -m scripts.mirrorctl upload-file \
             --local-path "$stage_dir/install-cn.sh" \
-            --key "install-cn.sh" \
+            --key "$(with_prefix "install-cn.sh")" \
             --cache-control "public, max-age=300"
 
           python3 -m scripts.mirrorctl upload-file \
             --local-path "$stage_dir/install-cn.ps1" \
-            --key "install-cn.ps1" \
+            --key "$(with_prefix "install-cn.ps1")" \
             --cache-control "public, max-age=300"
