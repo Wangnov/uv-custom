@@ -10,6 +10,7 @@ const REQUIRED_ENV_KEYS = [
   "S3_SECRET_ACCESS_KEY",
 ];
 const DEFAULT_PRESIGN_TTL_SECONDS = 600;
+const PROXIED_SUFFIXES = [".json", ".ps1", ".sh"];
 const textEncoder = new TextEncoder();
 
 export default {
@@ -39,6 +40,26 @@ export default {
       requestUrl,
       config,
     );
+
+    if (shouldProxyThroughWorker(requestUrl.pathname)) {
+      const upstreamResponse = await fetch(
+        new Request(signedUrl.toString(), {
+          method: request.method,
+          redirect: "manual",
+          signal: request.signal,
+        }),
+      );
+      const headers = new Headers(upstreamResponse.headers);
+      headers.delete("alt-svc");
+      return new Response(
+        request.method === "HEAD" ? null : upstreamResponse.body,
+        {
+          status: upstreamResponse.status,
+          statusText: upstreamResponse.statusText,
+          headers,
+        },
+      );
+    }
 
     return new Response(null, {
       status: 307,
@@ -82,6 +103,10 @@ function getPresignTtlSeconds(env) {
 
 function normalizeKeyPrefix(value) {
   return value.replace(/^\/+|\/+$/g, "");
+}
+
+function shouldProxyThroughWorker(pathname) {
+  return PROXIED_SUFFIXES.some((suffix) => pathname.endsWith(suffix));
 }
 
 function buildOriginUrl(originEndpoint, bucket, requestUrl, keyPrefix = "") {

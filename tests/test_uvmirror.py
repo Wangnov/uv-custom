@@ -170,7 +170,6 @@ class InstallerTests(unittest.TestCase):
 
         self.assertIn("UV_INSTALLER_GITHUB_BASE_URL", rendered.shell)
         self.assertIn("https://uv.example.com/github", rendered.shell)
-        self.assertIn("UV_PYTHON_INSTALL_MIRROR", rendered.shell)
         self.assertIn("UV_PYTHON_DOWNLOADS_JSON_URL", rendered.shell)
         self.assertIn("UV_PYPY_INSTALL_MIRROR", rendered.shell)
         self.assertIn("UV_DEFAULT_INDEX", rendered.shell)
@@ -184,10 +183,6 @@ class InstallerTests(unittest.TestCase):
             rendered.shell,
         )
         self.assertIn('printf \'%s\\n\' "$line"', rendered.shell)
-        self.assertIn(
-            'python-install-mirror = "%s/python-build-standalone/releases/download"\\n',
-            rendered.shell,
-        )
         self.assertIn(
             'python-downloads-json-url = "%s/metadata/python-downloads.json"\\n',
             rendered.shell,
@@ -208,13 +203,12 @@ class InstallerTests(unittest.TestCase):
             rendered.powershell,
         )
         self.assertIn(
-            '$env:UV_PYTHON_INSTALL_MIRROR = "$PublicBaseUrl/python-build-standalone/releases/download"',
-            rendered.powershell,
-        )
-        self.assertIn(
             '$env:UV_PYTHON_DOWNLOADS_JSON_URL = "$PublicBaseUrl/metadata/python-downloads.json"',
             rendered.powershell,
         )
+        self.assertNotIn("UV_PYTHON_INSTALL_MIRROR", rendered.shell)
+        self.assertNotIn('python-install-mirror = "', rendered.shell)
+        self.assertNotIn("UV_PYTHON_INSTALL_MIRROR", rendered.powershell)
         self.assertIn(
             '$env:UV_PYPY_INSTALL_MIRROR = "$PublicBaseUrl/pypy"',
             rendered.powershell,

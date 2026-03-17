@@ -68,11 +68,9 @@ powershell -ExecutionPolicy Bypass -c "irm https://uv.agentsmirror.com/install-c
 
 安装脚本会自动写入这些配置：
 
-- `python-install-mirror`
 - `python-downloads-json-url`
 - `pypy-install-mirror`
 - `UV_INSTALLER_GITHUB_BASE_URL`
-- `UV_PYTHON_INSTALL_MIRROR`
 - `UV_PYTHON_DOWNLOADS_JSON_URL`
 - `UV_PYPY_INSTALL_MIRROR`
 - `UV_DEFAULT_INDEX`
@@ -144,12 +142,15 @@ https://mirrors.aliyun.com/pypi/simple
 
 ## Cloudflare Worker
 
-`cloudflare/uv-origin-proxy` 里的 Worker 不再代理大文件内容，而是为私有 IHEP S3 生成短时效 AWS SigV4 预签名 URL，并返回 `307` 跳转。
+`cloudflare/uv-origin-proxy` 里的 Worker 现在分成两条路径：
+
+- 小文件如 `.json` / `.sh` / `.ps1`：Worker 直接代取预签名 URL 再返回内容
+- 大文件：Worker 生成短时效 AWS SigV4 预签名 URL，并返回 `307` 跳转
 
 这有两个直接好处：
 
 - 大文件流量直接从中国大陆 S3 出口下发，不穿过 Cloudflare Worker
-- 公开访问不依赖桶匿名读，也避开了 Worker 直连回源时的兼容性问题
+- 公开访问不依赖桶匿名读，同时也避开了 `uv` 对小文件 307 跳转的兼容性问题
 
 ### 中国访问建议
 

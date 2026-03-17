@@ -13,7 +13,6 @@ append_managed_block() {
   managed_block=$(cat <<'EOF'
 # >>> uv mirror managed block >>>
 export UV_INSTALLER_GITHUB_BASE_URL="__PUBLIC_BASE_URL__/github"
-export UV_PYTHON_INSTALL_MIRROR="__PUBLIC_BASE_URL__/python-build-standalone/releases/download"
 export UV_PYTHON_DOWNLOADS_JSON_URL="__PUBLIC_BASE_URL__/metadata/python-downloads.json"
 export UV_PYPY_INSTALL_MIRROR="__PUBLIC_BASE_URL__/pypy"
 export UV_DEFAULT_INDEX="__DEFAULT_INDEX_URL__"
@@ -49,7 +48,7 @@ write_uv_config() {
     while IFS= read -r line || [ -n "$line" ]; do
       trimmed=$(printf '%s' "$line" | sed 's/^[[:space:]]*//')
       case "$trimmed" in
-        python-install-mirror\\ =*|python-downloads-json-url\\ =*|pypy-install-mirror\\ =*)
+        python-downloads-json-url\\ =*|pypy-install-mirror\\ =*)
           continue
           ;;
       esac
@@ -61,7 +60,6 @@ write_uv_config() {
     printf '\\n' >> "$tmp_file"
   fi
 
-  printf 'python-install-mirror = "%s/python-build-standalone/releases/download"\\n' "$PUBLIC_BASE_URL" >> "$tmp_file"
   printf 'python-downloads-json-url = "%s/metadata/python-downloads.json"\\n' "$PUBLIC_BASE_URL" >> "$tmp_file"
   printf 'pypy-install-mirror = "%s/pypy"\\n' "$PUBLIC_BASE_URL" >> "$tmp_file"
   mv "$tmp_file" "$config_file"
@@ -100,7 +98,6 @@ function Set-ManagedBlock {
     $ManagedBlock = @"
 # >>> uv mirror managed block >>>
 $env:UV_INSTALLER_GITHUB_BASE_URL = "__PUBLIC_BASE_URL__/github"
-$env:UV_PYTHON_INSTALL_MIRROR = "__PUBLIC_BASE_URL__/python-build-standalone/releases/download"
 $env:UV_PYTHON_DOWNLOADS_JSON_URL = "__PUBLIC_BASE_URL__/metadata/python-downloads.json"
 $env:UV_PYPY_INSTALL_MIRROR = "__PUBLIC_BASE_URL__/pypy"
 $env:UV_DEFAULT_INDEX = "__DEFAULT_INDEX_URL__"
@@ -148,7 +145,6 @@ function Set-UvConfig {
 
     $Lines = @()
     foreach ($Line in $Existing -split "\r?\n") {
-        if ($Line.Trim().StartsWith("python-install-mirror =")) { continue }
         if ($Line.Trim().StartsWith("python-downloads-json-url =")) { continue }
         if ($Line.Trim().StartsWith("pypy-install-mirror =")) { continue }
         $Lines += $Line
@@ -166,14 +162,12 @@ function Set-UvConfig {
         $Lines += ""
     }
 
-    $Lines += 'python-install-mirror = "' + $PublicBaseUrl + '/python-build-standalone/releases/download"'
     $Lines += 'python-downloads-json-url = "' + $PublicBaseUrl + '/metadata/python-downloads.json"'
     $Lines += 'pypy-install-mirror = "' + $PublicBaseUrl + '/pypy"'
     [System.IO.File]::WriteAllText($ConfigFile, ($Lines -join "`r`n") + "`r`n", [System.Text.UTF8Encoding]::new($false))
 }
 
 $env:UV_INSTALLER_GITHUB_BASE_URL = "$PublicBaseUrl/github"
-$env:UV_PYTHON_INSTALL_MIRROR = "$PublicBaseUrl/python-build-standalone/releases/download"
 $env:UV_PYTHON_DOWNLOADS_JSON_URL = "$PublicBaseUrl/metadata/python-downloads.json"
 $env:UV_PYPY_INSTALL_MIRROR = "$PublicBaseUrl/pypy"
 $env:UV_DEFAULT_INDEX = "__DEFAULT_INDEX_URL__"
