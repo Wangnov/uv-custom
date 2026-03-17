@@ -1,12 +1,12 @@
+<p align="center">
+  <img src="assets/readme-hero.jpg" alt="uv.agentsmirror.com 中国大陆可用的 uv 公益镜像入口" width="100%">
+</p>
+
 # uv-custom: uv 公益镜像同步器
 
 [![uv Sync](https://github.com/Wangnov/uv-custom/actions/workflows/sync_uv.yml/badge.svg)](https://github.com/Wangnov/uv-custom/actions/workflows/sync_uv.yml)
 [![Python Sync](https://github.com/Wangnov/uv-custom/actions/workflows/sync_python.yml/badge.svg)](https://github.com/Wangnov/uv-custom/actions/workflows/sync_python.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-
-<p align="center">
-  <img src="assets/readme-hero.jpg" alt="uv.agentsmirror.com 中国大陆可用的 uv 公益镜像入口" width="100%">
-</p>
 
 一个面向中国大陆的 `uv` 公益镜像入口。
 
