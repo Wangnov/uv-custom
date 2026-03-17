@@ -4,6 +4,10 @@
 [![Python Sync](https://github.com/Wangnov/uv-custom/actions/workflows/sync_python.yml/badge.svg)](https://github.com/Wangnov/uv-custom/actions/workflows/sync_python.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+<p align="center">
+  <img src="assets/readme-hero.jpg" alt="uv.agentsmirror.com 中国大陆可用的 uv 公益镜像入口" width="100%">
+</p>
+
 一个面向中国大陆的 `uv` 公益镜像入口。
 
 目标：让 `uv` 本身，以及 `uv python install` 依赖的运行时下载，在大陆网络环境下更稳、更直接、更接近官方使用方式。
