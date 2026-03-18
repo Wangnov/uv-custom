@@ -5,7 +5,9 @@ import argparse
 import json
 import os
 import pathlib
+import sys
 
+from uvmirror.downloads import download_python_assets
 from uvmirror.installers import render_installers
 from uvmirror.metadata import (
     build_python_asset_manifest,
@@ -131,6 +133,10 @@ def main() -> None:
     python_downloads.add_argument("--public-base-url", required=True)
     python_downloads.add_argument("--manifest-output", type=pathlib.Path)
 
+    download_python_assets_parser = subparsers.add_parser("download-python-assets")
+    download_python_assets_parser.add_argument("--manifest", type=pathlib.Path, required=True)
+    download_python_assets_parser.add_argument("--stage-dir", type=pathlib.Path, required=True)
+
     render_installers_parser = subparsers.add_parser("render-installers")
     render_installers_parser.add_argument("--public-base-url", required=True)
     render_installers_parser.add_argument("--default-index-url", required=True)
@@ -169,6 +175,35 @@ def main() -> None:
             args.output,
             args.public_base_url,
             args.manifest_output,
+        )
+        return
+
+    if args.command == "download-python-assets":
+        download_python_assets(
+            manifest_path=args.manifest,
+            stage_dir=args.stage_dir,
+            max_attempts=int(
+                os.environ.get(
+                    "MIRROR_DOWNLOAD_MAX_ATTEMPTS",
+                    os.environ.get("MIRROR_MAX_ATTEMPTS", "24"),
+                )
+            ),
+            backoff_seconds=float(
+                os.environ.get(
+                    "MIRROR_DOWNLOAD_BACKOFF_SECONDS",
+                    os.environ.get("MIRROR_BACKOFF_SECONDS", "5"),
+                )
+            ),
+            request_interval=float(
+                os.environ.get(
+                    "MIRROR_DOWNLOAD_REQUEST_INTERVAL_SECONDS",
+                    os.environ.get("MIRROR_REQUEST_INTERVAL_SECONDS", "2"),
+                )
+            ),
+            max_backoff_seconds=float(
+                os.environ.get("MIRROR_DOWNLOAD_MAX_BACKOFF_SECONDS", "60")
+            ),
+            logger=lambda message: print(message, file=sys.stderr),
         )
         return
 

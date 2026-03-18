@@ -73,7 +73,7 @@ jobs:
           stage_dir="$RUNNER_TEMP/python-stage"
           mkdir -p "$stage_dir/metadata"
 
-          curl -LsSf \
+          curl --retry 6 --retry-delay 5 --retry-all-errors -LsSf \
             https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json \
             -o "$stage_dir/upstream-download-metadata.json"
 
@@ -83,29 +83,9 @@ jobs:
             --manifest-output "$stage_dir/python-assets.json" \
             --public-base-url "$PUBLIC_BASE_URL"
 
-          python3 - "$stage_dir/python-assets.json" "$stage_dir" <<'PY'
-          import hashlib
-          import json
-          import pathlib
-          import sys
-          import urllib.request
-
-          manifest_path = pathlib.Path(sys.argv[1])
-          stage_dir = pathlib.Path(sys.argv[2])
-          assets = json.loads(manifest_path.read_text(encoding="utf-8"))
-
-          for asset in assets:
-              destination = stage_dir / asset["mirror_path"]
-              destination.parent.mkdir(parents=True, exist_ok=True)
-              urllib.request.urlretrieve(asset["source_url"], destination)
-              expected_sha256 = asset.get("sha256")
-              if expected_sha256:
-                  digest = hashlib.sha256(destination.read_bytes()).hexdigest()
-                  if digest != expected_sha256:
-                      raise SystemExit(
-                          f"sha256 mismatch for {asset['source_url']}: {digest} != {expected_sha256}"
-                      )
-          PY
+          python3 -m scripts.mirrorctl download-python-assets \
+            --manifest "$stage_dir/python-assets.json" \
+            --stage-dir "$stage_dir"
 
           if [ -d "$stage_dir/python-build-standalone" ]; then
             python3 -m scripts.mirrorctl sync-dir-with-state \

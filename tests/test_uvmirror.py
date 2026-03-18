@@ -1,7 +1,11 @@
+import hashlib
+import json
 import pathlib
 import tempfile
 import unittest
+import urllib.error
 
+from uvmirror.downloads import download_python_assets
 from uvmirror.installers import render_installers
 from uvmirror.metadata import (
     build_state_manifest,
@@ -221,6 +225,92 @@ class InstallerTests(unittest.TestCase):
                 'irm "$PublicBaseUrl/github/astral-sh/uv/releases/download/latest/uv-installer.ps1" | iex'
             ),
         )
+
+
+class DownloadTests(unittest.TestCase):
+    def test_download_python_assets_retries_http_502_then_succeeds(self) -> None:
+        payload = b"payload"
+        attempts = 0
+        sleeps: list[float] = []
+        source_url = "https://example.com/releases/download/20260310/file.tar.gz"
+
+        def flaky_downloader(url: str, destination: pathlib.Path) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise urllib.error.HTTPError(url, 502, "Bad Gateway", hdrs=None, fp=None)
+            destination.write_bytes(payload)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            manifest_path = root / "python-assets.json"
+            manifest_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "source_url": source_url,
+                            "mirror_path": "python-build-standalone/releases/download/20260310/file.tar.gz",
+                            "sha256": hashlib.sha256(payload).hexdigest(),
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            download_python_assets(
+                manifest_path=manifest_path,
+                stage_dir=root / "stage",
+                max_attempts=3,
+                backoff_seconds=5,
+                request_interval=0,
+                sleep=sleeps.append,
+                downloader=flaky_downloader,
+            )
+
+            self.assertEqual(
+                (root / "stage" / "python-build-standalone/releases/download/20260310/file.tar.gz").read_bytes(),
+                payload,
+            )
+
+        self.assertEqual(attempts, 3)
+        self.assertEqual(sleeps, [5.0, 10.0])
+
+    def test_download_python_assets_reports_url_after_retries_exhausted(self) -> None:
+        sleeps: list[float] = []
+        source_url = "https://example.com/releases/download/20260310/file.tar.gz"
+
+        def failing_downloader(url: str, destination: pathlib.Path) -> None:
+            raise urllib.error.HTTPError(url, 502, "Bad Gateway", hdrs=None, fp=None)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            manifest_path = root / "python-assets.json"
+            manifest_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "source_url": source_url,
+                            "mirror_path": "python-build-standalone/releases/download/20260310/file.tar.gz",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(SystemExit) as context:
+                download_python_assets(
+                    manifest_path=manifest_path,
+                    stage_dir=root / "stage",
+                    max_attempts=2,
+                    backoff_seconds=3,
+                    request_interval=0,
+                    sleep=sleeps.append,
+                    downloader=failing_downloader,
+                )
+
+        self.assertIn(source_url, str(context.exception))
+        self.assertIn("after 2 attempts", str(context.exception))
+        self.assertEqual(sleeps, [3.0])
 
 
 class FakeBody:
