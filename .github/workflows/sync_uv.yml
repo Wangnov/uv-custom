@@ -18,7 +18,6 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
       MIRROR_KEY_PREFIX: ${{ vars.MIRROR_KEY_PREFIX }}
-      DEFAULT_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_ENDPOINT_URL: ${{ secrets.AWS_ENDPOINT_URL }}
@@ -90,7 +89,7 @@ jobs:
 
           python3 -m scripts.mirrorctl render-installers \
             --public-base-url "$PUBLIC_BASE_URL" \
-            --default-index-url "$DEFAULT_INDEX_URL" \
+            --default-index-url "${PUBLIC_BASE_URL%/}/pypi/simple" \
             --output-dir "$stage_dir"
 
           python3 -m scripts.mirrorctl upload-dir \

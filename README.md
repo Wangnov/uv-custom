@@ -10,7 +10,7 @@
 
 一个面向中国大陆的 `uv` 公益镜像入口。
 
-目标：让 `uv` 本身，以及 `uv python install` 依赖的运行时下载，在大陆网络环境下更稳、更直接、更接近官方使用方式。
+目标：让 `uv` 本身、`uv python install` 依赖的运行时下载，以及 `uv add` / `uv lock` / `uv sync` / `uv pip install` 所依赖的 PyPI 访问，在大陆网络环境下更稳、更直接、更接近官方使用方式。
 
 [立即安装](#立即安装) · [当前状态](#当前状态) · [镜像范围](#镜像范围) · [同步策略](#同步策略) · [本地验证](#本地验证)
 
@@ -23,9 +23,10 @@
 - 同步官方 `uv` release 与 installer
 - 同步 `uv python` 需要的最新运行时资产
 - 提供一个面向大陆用户的统一安装入口
+- 提供一个面向 `uv` / `pip` 的 PyPI Simple 代理入口
 - 尽量保持与官方安装方式一致，不另起一套分发逻辑
 
-本项目只提供对象分发，不提供 HTML 站点。
+本项目不提供普通展示站点，但会提供 `uv` / `pip` 需要的 Simple JSON / HTML 接口。
 
 ## 立即安装
 
@@ -58,6 +59,18 @@ powershell -ExecutionPolicy ByPass -c "irm https://uv.agentsmirror.com/install-c
 - `UV_PYPY_INSTALL_MIRROR`
 - `UV_DEFAULT_INDEX`
 
+其中 `UV_DEFAULT_INDEX` 现在默认写入：
+
+```text
+https://uv.agentsmirror.com/pypi/simple
+```
+
+这个入口的行为是：
+
+- `simple` 页面和 `*.metadata` 由 `uv.agentsmirror.com` 自己代理并缓存
+- wheel / sdist 包体优先走清华源
+- 清华源失败时由 Worker 回退到官方 `files.pythonhosted.org`
+
 如果本机已经存在 `uv.toml`，脚本会先备份，再只更新受管键。
 
 为了让后续 `uv self update` 继续走镜像，profile 中还会写入一段受管块；如果你不想保留镜像环境变量，可以在安装后手动删除。
@@ -83,6 +96,10 @@ powershell -ExecutionPolicy ByPass -c "irm https://uv.agentsmirror.com/install-c
 - 官方 `uv-installer.sh` / `uv-installer.ps1`
 - `uv python` 需要的最新运行时资产
   当前覆盖 `CPython`、`PyPy`、`GraalPy`
+- `uv` / `pip` 需要的 PyPI Simple 入口
+  当前提供：
+  - `/pypi/simple/<project>/`
+  - `/pypi/files/files.pythonhosted.org/...`
 - 国内预设安装入口
   当前生成：
   - `/install-cn.sh`
@@ -101,6 +118,8 @@ powershell -ExecutionPolicy ByPass -c "irm https://uv.agentsmirror.com/install-c
 /graalpython/releases/download/<build>/...
 /metadata/uv-latest.json
 /metadata/python-downloads.json
+/pypi/simple/<project>/
+/pypi/files/files.pythonhosted.org/...
 /install-cn.sh
 /install-cn.ps1
 ```
@@ -130,17 +149,21 @@ powershell -ExecutionPolicy ByPass -c "irm https://uv.agentsmirror.com/install-c
 
 ## 默认 PyPI
 
-默认写入的是清华源：
+默认写入的是自家 PyPI 代理入口：
 
 ```text
-https://pypi.tuna.tsinghua.edu.cn/simple
+https://uv.agentsmirror.com/pypi/simple
 ```
 
-如果你更想使用阿里源，可以把 `UV_DEFAULT_INDEX` 改成：
+这个入口会：
 
-```text
-https://mirrors.aliyun.com/pypi/simple
-```
+- 对 `uv` 优先返回 Simple JSON
+- 对 `pip` / 浏览器返回 Simple HTML
+- 把文件 URL 统一改写到 `uv.agentsmirror.com/pypi/files/...`
+- 对 `*.metadata` 做缓存
+- 对 wheel / sdist 优先走清华源，失败时回退官方
+
+如果你更想手动指定别的索引，仍然可以覆盖 `UV_DEFAULT_INDEX`。
 
 ## 本地验证
 
@@ -155,7 +178,7 @@ python3 -m unittest tests/test_uvmirror.py -v
 ```sh
 python3 -m scripts.mirrorctl render-installers \
   --public-base-url https://uv.agentsmirror.com \
-  --default-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+  --default-index-url https://uv.agentsmirror.com/pypi/simple \
   --output-dir ./dist
 ```
 

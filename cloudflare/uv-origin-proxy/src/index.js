@@ -14,7 +14,7 @@ const PROXIED_SUFFIXES = [".json", ".ps1", ".sh"];
 const textEncoder = new TextEncoder();
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (!ALLOWED_METHODS.has(request.method)) {
       return jsonResponse(
         { error: "method_not_allowed", allow: [...ALLOWED_METHODS] },
@@ -35,6 +35,23 @@ export default {
     }
 
     const requestUrl = new URL(request.url);
+    const pypiCanonicalResponse = getPypiCanonicalResponse(requestUrl);
+    if (pypiCanonicalResponse) {
+      return pypiCanonicalResponse;
+    }
+
+    if (isPypiSimpleRequest(requestUrl.pathname)) {
+      return proxyPypiSimple(request, requestUrl, env, config, ctx);
+    }
+
+    if (isPypiFileMetadataRequest(requestUrl.pathname)) {
+      return proxyPypiFileMetadata(request, requestUrl, env, config, ctx);
+    }
+
+    if (isPypiFileRequest(requestUrl.pathname)) {
+      return proxyPypiFile(request, requestUrl, env);
+    }
+
     const signedUrl = await buildPresignedUrl(
       request.method,
       requestUrl,
@@ -105,6 +122,320 @@ function normalizeKeyPrefix(value) {
   return value.replace(/^\/+|\/+$/g, "");
 }
 
+async function proxyPypiSimple(request, requestUrl, env, config, ctx) {
+  const projectName = getSimpleProjectName(requestUrl.pathname);
+  const upstreamBaseUrl = (env.PYPI_SIMPLE_UPSTREAM || "https://pypi.org/simple").replace(/\/+$/g, "");
+  const upstreamUrl = `${upstreamBaseUrl}/${projectName}/`;
+  const accept = request.headers.get("accept") || "application/vnd.pypi.simple.v1+json";
+  const format = wantsSimpleJson(accept) ? "json" : "html";
+  const cacheKey = buildPypiSimpleCacheKey(env, projectName, format);
+  const contentType = format === "json"
+    ? "application/vnd.pypi.simple.v1+json; charset=utf-8"
+    : "application/vnd.pypi.simple.v1+html; charset=utf-8";
+
+  const cachedResponse = await fetchFreshCacheEntry(
+    request,
+    cacheKey,
+    config,
+    300,
+    contentType,
+  );
+  if (cachedResponse) {
+    return cachedResponse;
+  }
+
+  const upstreamResponse = await fetch(
+    new Request(upstreamUrl, {
+      method: request.method,
+      headers: {
+        accept,
+      },
+      redirect: "manual",
+      signal: request.signal,
+    }),
+  );
+
+  if (!upstreamResponse.ok) {
+    return upstreamResponse;
+  }
+
+  if (request.method === "HEAD") {
+    return new Response(null, {
+      status: upstreamResponse.status,
+      statusText: upstreamResponse.statusText,
+      headers: {
+        "content-type": contentType,
+        "cache-control": "public, max-age=300",
+      },
+    });
+  }
+
+  let responseBody;
+  if (format === "json") {
+    const payload = await upstreamResponse.json();
+    payload.files = (payload.files || []).map((file) => ({
+      ...file,
+      url: rewritePackageFileUrl(file.url, requestUrl.origin),
+    }));
+    responseBody = JSON.stringify(payload);
+  } else {
+    responseBody = rewriteSimpleHtml(
+      await upstreamResponse.text(),
+      requestUrl.origin,
+    );
+  }
+
+  if (request.method === "GET" && typeof ctx?.waitUntil === "function") {
+    ctx.waitUntil(storeCacheEntry(cacheKey, responseBody, config));
+  }
+
+  return new Response(responseBody, {
+    status: upstreamResponse.status,
+    statusText: upstreamResponse.statusText,
+    headers: {
+      "content-type": contentType,
+    },
+  });
+}
+
+async function proxyPypiFileMetadata(request, requestUrl, env, config, ctx) {
+  const cacheKey = buildPypiMetadataCacheKey(env, requestUrl.pathname);
+  const cachedResponse = await fetchCachedEntry(
+    request,
+    cacheKey,
+    config,
+    "application/octet-stream",
+  );
+  if (cachedResponse) {
+    return cachedResponse;
+  }
+
+  const upstreamUrl = buildPypiFileUpstreamUrl(requestUrl.pathname);
+  const upstreamResponse = await fetch(
+    new Request(upstreamUrl, {
+      method: request.method,
+      redirect: "manual",
+      signal: request.signal,
+    }),
+  );
+
+  if (!upstreamResponse.ok) {
+    return upstreamResponse;
+  }
+
+  const responseBody = request.method === "HEAD"
+    ? null
+    : await upstreamResponse.text();
+  if (
+    request.method === "GET" &&
+    responseBody !== null &&
+    typeof ctx?.waitUntil === "function"
+  ) {
+    ctx.waitUntil(storeCacheEntry(cacheKey, responseBody, config));
+  }
+
+  return new Response(responseBody, {
+    status: upstreamResponse.status,
+    statusText: upstreamResponse.statusText,
+    headers: {
+      "content-type": "application/octet-stream",
+    },
+  });
+}
+
+async function fetchFreshCacheEntry(request, key, config, maxAgeSeconds, contentType) {
+  const cachedResponse = await fetchFromS3Key(request.method, key, config, request.signal);
+  if (!cachedResponse.ok || !isResponseFresh(cachedResponse, maxAgeSeconds)) {
+    return null;
+  }
+
+  const headers = new Headers();
+  headers.set("content-type", contentType);
+  headers.set("cache-control", `public, max-age=${maxAgeSeconds}`);
+  return new Response(request.method === "HEAD" ? null : cachedResponse.body, {
+    status: cachedResponse.status,
+    statusText: cachedResponse.statusText,
+    headers,
+  });
+}
+
+async function fetchCachedEntry(request, key, config, contentType) {
+  const cachedResponse = await fetchFromS3Key(request.method, key, config, request.signal);
+  if (!cachedResponse.ok) {
+    return null;
+  }
+
+  const headers = new Headers();
+  headers.set("content-type", contentType);
+  return new Response(request.method === "HEAD" ? null : cachedResponse.body, {
+    status: cachedResponse.status,
+    statusText: cachedResponse.statusText,
+    headers,
+  });
+}
+
+async function proxyPypiFile(request, requestUrl, env) {
+  const primaryBaseUrl = (env.PYPI_FILE_PRIMARY_UPSTREAM || "https://pypi.tuna.tsinghua.edu.cn").replace(/\/+$/g, "");
+  const fallbackBaseUrl = (env.PYPI_FILE_FALLBACK_UPSTREAM || "https://files.pythonhosted.org").replace(/\/+$/g, "");
+  const upstreamPath = getPypiFilePath(requestUrl.pathname);
+  const candidates = [
+    `${primaryBaseUrl}${upstreamPath}`,
+    `${fallbackBaseUrl}${upstreamPath}`,
+  ];
+  let lastResponse = null;
+
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(
+        new Request(candidate, {
+          method: request.method,
+          redirect: "manual",
+          signal: request.signal,
+        }),
+      );
+      if (response.status < 400) {
+        return response;
+      }
+      lastResponse = response;
+    } catch {
+      continue;
+    }
+  }
+
+  if (lastResponse) {
+    return lastResponse;
+  }
+
+  return new Response("upstream file unavailable", { status: 502 });
+}
+
+async function fetchFromS3Key(method, key, config, signal) {
+  const signedUrl = await buildPresignedUrlForPath(method, `/${key}`, config);
+  return fetch(
+    new Request(signedUrl.toString(), {
+      method,
+      redirect: "manual",
+      signal,
+    }),
+  );
+}
+
+async function storeCacheEntry(key, body, config) {
+  const signedUrl = await buildPresignedUrlForPath("PUT", `/${key}`, config);
+  await fetch(
+    new Request(signedUrl.toString(), {
+      method: "PUT",
+      body,
+      redirect: "manual",
+    }),
+  );
+}
+
+function getPypiCanonicalResponse(requestUrl) {
+  const projectName = getSimpleProjectName(requestUrl.pathname);
+  if (!projectName) {
+    return null;
+  }
+
+  const normalizedProjectName = normalizeProjectName(projectName);
+  if (
+    requestUrl.pathname === `/pypi/simple/${normalizedProjectName}/`
+  ) {
+    return null;
+  }
+
+  const canonicalUrl = new URL(requestUrl.toString());
+  canonicalUrl.pathname = `/pypi/simple/${normalizedProjectName}/`;
+  return new Response(null, {
+    status: 308,
+    headers: {
+      location: canonicalUrl.toString(),
+    },
+  });
+}
+
+function getSimpleProjectName(pathname) {
+  const match = pathname.match(/^\/pypi\/simple\/([^/]+)\/?$/);
+  return match ? match[1] : null;
+}
+
+function isPypiSimpleRequest(pathname) {
+  return getSimpleProjectName(pathname) !== null;
+}
+
+function isPypiFileMetadataRequest(pathname) {
+  return pathname.startsWith("/pypi/files/") && pathname.endsWith(".metadata");
+}
+
+function isPypiFileRequest(pathname) {
+  return pathname.startsWith("/pypi/files/");
+}
+
+function normalizeProjectName(projectName) {
+  return projectName.toLowerCase().replace(/[-_.]+/g, "-");
+}
+
+function wantsSimpleJson(acceptHeader) {
+  return acceptHeader.includes("application/vnd.pypi.simple.v1+json");
+}
+
+function rewritePackageFileUrl(fileUrl, publicOrigin) {
+  if (!fileUrl) {
+    return fileUrl;
+  }
+
+  const parsed = new URL(fileUrl);
+  return `${publicOrigin}/pypi/files/${parsed.host}${parsed.pathname}${parsed.search}${parsed.hash}`;
+}
+
+function rewriteSimpleHtml(html, publicOrigin) {
+  return html.replace(/href=(["'])(https:\/\/[^"']+)\1/g, (full, quote, href) => {
+    return `href=${quote}${rewritePackageFileUrl(href, publicOrigin)}${quote}`;
+  });
+}
+
+function buildPypiSimpleCacheKey(env, projectName, format) {
+  const prefix = normalizeKeyPrefix(env.PYPI_CACHE_PREFIX || "pypi-cache");
+  return `${prefix}/simple/${format}/${projectName}`;
+}
+
+function buildPypiMetadataCacheKey(env, pathname) {
+  const prefix = normalizeKeyPrefix(env.PYPI_CACHE_PREFIX || "pypi-cache");
+  return `${prefix}/metadata/${pathname.slice("/pypi/files/".length)}`;
+}
+
+function buildPypiFileUpstreamUrl(pathname) {
+  const filePath = getPypiFilePath(pathname);
+  const host = getPypiFileHost(pathname);
+  return `https://${host}${filePath}`;
+}
+
+function getPypiFileHost(pathname) {
+  const suffix = pathname.slice("/pypi/files/".length);
+  const slashIndex = suffix.indexOf("/");
+  return suffix.slice(0, slashIndex);
+}
+
+function getPypiFilePath(pathname) {
+  const suffix = pathname.slice("/pypi/files/".length);
+  const slashIndex = suffix.indexOf("/");
+  return suffix.slice(slashIndex);
+}
+
+function isResponseFresh(response, maxAgeSeconds) {
+  const lastModified = response.headers.get("last-modified");
+  if (!lastModified) {
+    return false;
+  }
+
+  const lastModifiedMs = Date.parse(lastModified);
+  if (Number.isNaN(lastModifiedMs)) {
+    return false;
+  }
+
+  return Date.now() - lastModifiedMs <= maxAgeSeconds * 1000;
+}
+
 function shouldProxyThroughWorker(pathname) {
   return PROXIED_SUFFIXES.some((suffix) => pathname.endsWith(suffix));
 }
@@ -121,6 +452,12 @@ function buildOriginUrl(originEndpoint, bucket, requestUrl, keyPrefix = "") {
   originUrl.pathname = `${basePath}/${bucket}${prefixPath}${requestPath}`;
   originUrl.search = requestUrl.search;
   return originUrl;
+}
+
+async function buildPresignedUrlForPath(method, pathname, config, now = new Date()) {
+  const requestUrl = new URL("https://cache.internal");
+  requestUrl.pathname = pathname;
+  return buildPresignedUrl(method, requestUrl, config, now);
 }
 
 async function buildPresignedUrl(method, requestUrl, config, now = new Date()) {

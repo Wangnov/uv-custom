@@ -16,6 +16,10 @@
     "S3_BUCKET": "20830-uv-custom",
     "S3_REGION": "us-east-1",
     "S3_KEY_PREFIX": "mirror2",
+    "PYPI_CACHE_PREFIX": "pypi-cache",
+    "PYPI_SIMPLE_UPSTREAM": "https://pypi.org/simple",
+    "PYPI_FILE_PRIMARY_UPSTREAM": "https://pypi.tuna.tsinghua.edu.cn",
+    "PYPI_FILE_FALLBACK_UPSTREAM": "https://files.pythonhosted.org",
     // Optional:
     // "S3_PRESIGN_TTL_SECONDS": "600"
   }
