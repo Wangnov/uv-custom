@@ -238,6 +238,15 @@ class InstallerTests(unittest.TestCase):
             rendered.powershell,
         )
 
+    def test_render_installers_powershell_managed_block_uses_literal_here_string(self) -> None:
+        rendered = render_installers(
+            public_base_url="https://uv.example.com",
+            default_index_url="https://pypi.tuna.tsinghua.edu.cn/simple",
+        )
+
+        self.assertIn("$ManagedBlock = @'", rendered.powershell)
+        self.assertNotIn('$ManagedBlock = @"', rendered.powershell)
+
 
 class DownloadTests(unittest.TestCase):
     def test_download_python_assets_retries_http_502_then_succeeds(self) -> None:

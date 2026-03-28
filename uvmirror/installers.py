@@ -95,14 +95,14 @@ $PublicBaseUrl = "__PUBLIC_BASE_URL__"
 function Set-ManagedBlock {
     param([string]$Path)
 
-    $ManagedBlock = @"
+    $ManagedBlock = @'
 # >>> uv mirror managed block >>>
 $env:UV_INSTALLER_GITHUB_BASE_URL = "__PUBLIC_BASE_URL__/github"
 $env:UV_PYTHON_DOWNLOADS_JSON_URL = "__PUBLIC_BASE_URL__/metadata/python-downloads.json"
 $env:UV_PYPY_INSTALL_MIRROR = "__PUBLIC_BASE_URL__/pypy"
 $env:UV_DEFAULT_INDEX = "__DEFAULT_INDEX_URL__"
 # <<< uv mirror managed block <<<
-"@
+'@
 
     $Directory = Split-Path -Parent $Path
     if ($Directory -and -not (Test-Path $Directory)) {
