@@ -1,0 +1,364 @@
+name: Smoke Matrix
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: smoke-matrix
+  cancel-in-progress: true
+
+env:
+  SMOKE_BASE_URL: https://uv.agentsmirror.com
+  SMOKE_PYTHON_VERSION: "3.12"
+  SMOKE_PACKAGE: pillow==12.1.1
+
+jobs:
+  smoke:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+
+    steps:
+      - name: Prepare Unix runner
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact_dir="$RUNNER_TEMP/smoke-artifact"
+          config_file="${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml"
+
+          mkdir -p "$artifact_dir"
+          mkdir -p "$HOME/.local/bin" "$(dirname "$config_file")"
+
+          rm -f "$HOME/.local/bin/uv" "$HOME/.local/bin/uvx" "$HOME/.local/bin/uvw"
+          rm -f "$config_file"
+
+          : > "$HOME/.profile"
+          : > "$HOME/.bashrc"
+          : > "$HOME/.zshrc"
+
+      - name: Prepare Windows runner
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $artifactDir = Join-Path $env:RUNNER_TEMP 'smoke-artifact'
+          $binDir = Join-Path $HOME '.local\bin'
+          $configFile = Join-Path $env:APPDATA 'uv\uv.toml'
+          $profileDir = Split-Path -Parent $PROFILE
+
+          New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+
+          Remove-Item (Join-Path $binDir 'uv.exe') -ErrorAction SilentlyContinue
+          Remove-Item (Join-Path $binDir 'uvx.exe') -ErrorAction SilentlyContinue
+          Remove-Item (Join-Path $binDir 'uvw.exe') -ErrorAction SilentlyContinue
+          Remove-Item $configFile -ErrorAction SilentlyContinue
+
+          [System.IO.File]::WriteAllText($PROFILE, '', [System.Text.UTF8Encoding]::new($false))
+
+      - name: Probe PyPI proxy on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact_dir="$RUNNER_TEMP/smoke-artifact"
+          html_path="$artifact_dir/pillow.simple.html"
+          json_path="$artifact_dir/pillow.simple.json"
+
+          curl -LsSf "$SMOKE_BASE_URL/pypi/simple/pillow/" -o "$html_path"
+          grep -F "$SMOKE_BASE_URL/pypi/files/files.pythonhosted.org/" "$html_path" >/dev/null
+
+          curl -LsSf \
+            -H 'Accept: application/vnd.pypi.simple.v1+json' \
+            "$SMOKE_BASE_URL/pypi/simple/pillow/" \
+            -o "$json_path"
+          grep -F "$SMOKE_BASE_URL/pypi/files/files.pythonhosted.org/" "$json_path" >/dev/null
+
+      - name: Probe PyPI proxy on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $artifactDir = Join-Path $env:RUNNER_TEMP 'smoke-artifact'
+          $htmlPath = Join-Path $artifactDir 'pillow.simple.html'
+          $jsonPath = Join-Path $artifactDir 'pillow.simple.json'
+
+          (Invoke-WebRequest -Uri "$env:SMOKE_BASE_URL/pypi/simple/pillow/").Content |
+            Set-Content -Path $htmlPath -Encoding UTF8
+          Select-String -Path $htmlPath -Pattern "$($env:SMOKE_BASE_URL)/pypi/files/files.pythonhosted.org/" -SimpleMatch | Out-Null
+
+          $headers = @{
+            Accept = 'application/vnd.pypi.simple.v1+json'
+          }
+          (Invoke-WebRequest -Uri "$env:SMOKE_BASE_URL/pypi/simple/pillow/" -Headers $headers).Content |
+            Set-Content -Path $jsonPath -Encoding UTF8
+          Select-String -Path $jsonPath -Pattern "$($env:SMOKE_BASE_URL)/pypi/files/files.pythonhosted.org/" -SimpleMatch | Out-Null
+
+      - name: Install uv on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -LsSf "$SMOKE_BASE_URL/install-cn.sh" | sh
+
+      - name: Install uv on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installUrl = "$env:SMOKE_BASE_URL/install-cn.ps1"
+          powershell -ExecutionPolicy ByPass -Command "irm '$installUrl' | iex"
+
+      - name: Verify installation and config on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact_dir="$RUNNER_TEMP/smoke-artifact"
+          config_file="${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml"
+          summary_file="$artifact_dir/summary.txt"
+
+          . "$HOME/.profile"
+          printf '%s\n' "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          hash -r
+
+          uv_path="$(command -v uv)"
+          [ "$uv_path" = "$HOME/.local/bin/uv" ]
+
+          uv --version | tee "$artifact_dir/uv-version.txt"
+
+          cp "$HOME/.profile" "$artifact_dir/profile.txt"
+          cp "$config_file" "$artifact_dir/uv.toml"
+
+          grep -F '# >>> uv mirror managed block >>>' "$HOME/.profile" >/dev/null
+          grep -F "export UV_INSTALLER_GITHUB_BASE_URL=\"$SMOKE_BASE_URL/github\"" "$HOME/.profile" >/dev/null
+          grep -F "export UV_PYTHON_DOWNLOADS_JSON_URL=\"$SMOKE_BASE_URL/metadata/python-downloads.json\"" "$HOME/.profile" >/dev/null
+          grep -F "export UV_PYPY_INSTALL_MIRROR=\"$SMOKE_BASE_URL/pypy\"" "$HOME/.profile" >/dev/null
+          grep -F "export UV_DEFAULT_INDEX=\"$SMOKE_BASE_URL/pypi/simple\"" "$HOME/.profile" >/dev/null
+
+          grep -F "python-downloads-json-url = \"$SMOKE_BASE_URL/metadata/python-downloads.json\"" "$config_file" >/dev/null
+          grep -F "pypy-install-mirror = \"$SMOKE_BASE_URL/pypy\"" "$config_file" >/dev/null
+
+          {
+            echo "runner_os=$RUNNER_OS"
+            echo "uv_path=$uv_path"
+            echo "uv_version=$(cat "$artifact_dir/uv-version.txt")"
+          } > "$summary_file"
+
+          {
+            echo "## $RUNNER_OS"
+            echo
+            echo "- uv path: \`$uv_path\`"
+            echo "- uv version: \`$(cat "$artifact_dir/uv-version.txt")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify installation and config on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $artifactDir = Join-Path $env:RUNNER_TEMP 'smoke-artifact'
+          $summaryFile = Join-Path $artifactDir 'summary.txt'
+          $configFile = Join-Path $env:APPDATA 'uv\uv.toml'
+          $binDir = Join-Path $HOME '.local\bin'
+          $expectedUvPath = Join-Path $binDir 'uv.exe'
+
+          . $PROFILE
+          Add-Content -Path $env:GITHUB_PATH -Value $binDir
+          $env:PATH = "$binDir;$env:PATH"
+
+          $uvPath = (Get-Command uv).Source
+          if ($uvPath -ne $expectedUvPath) {
+            throw "Expected uv at $expectedUvPath but found $uvPath"
+          }
+
+          $uvVersion = (& uv --version).Trim()
+          Set-Content -Path (Join-Path $artifactDir 'uv-version.txt') -Value $uvVersion -Encoding UTF8
+
+          Copy-Item $PROFILE (Join-Path $artifactDir 'profile.ps1')
+          Copy-Item $configFile (Join-Path $artifactDir 'uv.toml')
+
+          Select-String -Path $PROFILE -Pattern '# >>> uv mirror managed block >>>' -SimpleMatch | Out-Null
+          Select-String -Path $PROFILE -Pattern '$env:UV_INSTALLER_GITHUB_BASE_URL = "https://uv.agentsmirror.com/github"' -SimpleMatch | Out-Null
+          Select-String -Path $PROFILE -Pattern '$env:UV_PYTHON_DOWNLOADS_JSON_URL = "https://uv.agentsmirror.com/metadata/python-downloads.json"' -SimpleMatch | Out-Null
+          Select-String -Path $PROFILE -Pattern '$env:UV_PYPY_INSTALL_MIRROR = "https://uv.agentsmirror.com/pypy"' -SimpleMatch | Out-Null
+          Select-String -Path $PROFILE -Pattern '$env:UV_DEFAULT_INDEX = "https://uv.agentsmirror.com/pypi/simple"' -SimpleMatch | Out-Null
+
+          Select-String -Path $configFile -Pattern 'python-downloads-json-url = "https://uv.agentsmirror.com/metadata/python-downloads.json"' -SimpleMatch | Out-Null
+          Select-String -Path $configFile -Pattern 'pypy-install-mirror = "https://uv.agentsmirror.com/pypy"' -SimpleMatch | Out-Null
+
+          @(
+            "runner_os=$env:RUNNER_OS"
+            "uv_path=$uvPath"
+            "uv_version=$uvVersion"
+          ) | Set-Content -Path $summaryFile -Encoding UTF8
+
+          @"
+          ## $env:RUNNER_OS
+
+          - uv path: `$uvPath`
+          - uv version: `$uvVersion`
+          "@ | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+      - name: Run uv python install on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact_dir="$RUNNER_TEMP/smoke-artifact"
+          summary_file="$artifact_dir/summary.txt"
+
+          . "$HOME/.profile"
+          export PATH="$HOME/.local/bin:$PATH"
+          hash -r
+
+          uv python install "$SMOKE_PYTHON_VERSION" | tee "$artifact_dir/uv-python-install.txt"
+          echo "python_install=success" >> "$summary_file"
+
+      - name: Run uv python install on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $artifactDir = Join-Path $env:RUNNER_TEMP 'smoke-artifact'
+          $summaryFile = Join-Path $artifactDir 'summary.txt'
+          $binDir = Join-Path $HOME '.local\bin'
+
+          . $PROFILE
+          $env:PATH = "$binDir;$env:PATH"
+
+          & uv python install $env:SMOKE_PYTHON_VERSION 2>&1 |
+            Tee-Object -FilePath (Join-Path $artifactDir 'uv-python-install.txt')
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          Add-Content -Path $summaryFile -Value 'python_install=success'
+
+      - name: Run project smoke on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact_dir="$RUNNER_TEMP/smoke-artifact"
+          summary_file="$artifact_dir/summary.txt"
+          project_dir="$RUNNER_TEMP/smoke-app"
+
+          . "$HOME/.profile"
+          export PATH="$HOME/.local/bin:$PATH"
+          hash -r
+
+          rm -rf "$project_dir"
+          mkdir -p "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP"
+
+          uv init smoke-app --bare --python "$SMOKE_PYTHON_VERSION"
+          cd "$project_dir"
+
+          uv add "$SMOKE_PACKAGE" | tee "$artifact_dir/uv-add.txt"
+          grep -F "$SMOKE_BASE_URL/pypi/simple" pyproject.toml >/dev/null
+
+          uv run python -c "from PIL import Image; print(Image.__version__)" | tee "$artifact_dir/pillow-version.txt"
+          pillow_version="$(tail -n 1 "$artifact_dir/pillow-version.txt" | tr -d '\r')"
+          [ "$pillow_version" = "12.1.1" ]
+
+          uv sync | tee "$artifact_dir/uv-sync.txt"
+
+          cp pyproject.toml "$artifact_dir/pyproject.toml"
+          if [ -f uv.lock ]; then
+            cp uv.lock "$artifact_dir/uv.lock"
+          fi
+
+          {
+            echo "uv_add=success"
+            echo "uv_sync=success"
+            echo "pillow_version=$pillow_version"
+          } >> "$summary_file"
+
+          {
+            echo "- python install: success"
+            echo "- package add: success"
+            echo "- pillow version: \`$pillow_version\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run project smoke on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $artifactDir = Join-Path $env:RUNNER_TEMP 'smoke-artifact'
+          $summaryFile = Join-Path $artifactDir 'summary.txt'
+          $projectDir = Join-Path $env:RUNNER_TEMP 'smoke-app'
+          $binDir = Join-Path $HOME '.local\bin'
+
+          . $PROFILE
+          $env:PATH = "$binDir;$env:PATH"
+
+          Remove-Item $projectDir -Recurse -Force -ErrorAction SilentlyContinue
+          Set-Location $env:RUNNER_TEMP
+
+          & uv init smoke-app --bare --python $env:SMOKE_PYTHON_VERSION
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          Set-Location $projectDir
+
+          & uv add $env:SMOKE_PACKAGE 2>&1 |
+            Tee-Object -FilePath (Join-Path $artifactDir 'uv-add.txt')
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          Select-String -Path (Join-Path $projectDir 'pyproject.toml') -Pattern 'https://uv.agentsmirror.com/pypi/simple' -SimpleMatch | Out-Null
+
+          & uv run python -c "from PIL import Image; print(Image.__version__)" 2>&1 |
+            Tee-Object -FilePath (Join-Path $artifactDir 'pillow-version.txt')
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          $pillowVersion = (Get-Content (Join-Path $artifactDir 'pillow-version.txt') | Select-Object -Last 1).Trim()
+          if ($pillowVersion -ne '12.1.1') {
+            throw "Expected pillow 12.1.1 but found $pillowVersion"
+          }
+
+          & uv sync 2>&1 |
+            Tee-Object -FilePath (Join-Path $artifactDir 'uv-sync.txt')
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          Copy-Item (Join-Path $projectDir 'pyproject.toml') (Join-Path $artifactDir 'pyproject.toml')
+          if (Test-Path (Join-Path $projectDir 'uv.lock')) {
+            Copy-Item (Join-Path $projectDir 'uv.lock') (Join-Path $artifactDir 'uv.lock')
+          }
+
+          Add-Content -Path $summaryFile -Value 'uv_add=success'
+          Add-Content -Path $summaryFile -Value 'uv_sync=success'
+          Add-Content -Path $summaryFile -Value "pillow_version=$pillowVersion"
+
+          @"
+          - python install: success
+          - package add: success
+          - pillow version: `$pillowVersion`
+          "@ | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-${{ matrix.os }}
+          path: ${{ runner.temp }}/smoke-artifact
+          if-no-files-found: warn
