@@ -38,7 +38,7 @@ curl -LsSf https://uv.agentsmirror.com/install-cn.sh | sh
 ### Windows PowerShell
 
 ```powershell
-irm https://uv.agentsmirror.com/install-cn.ps1 | iex
+powershell -ExecutionPolicy ByPass -c "irm https://uv.agentsmirror.com/install-cn.ps1 | iex"
 ```
 
 ## 安装脚本会做什么

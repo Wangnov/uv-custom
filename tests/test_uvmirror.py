@@ -226,6 +226,18 @@ class InstallerTests(unittest.TestCase):
             ),
         )
 
+    def test_render_installers_powershell_guards_against_empty_profile_content(self) -> None:
+        rendered = render_installers(
+            public_base_url="https://uv.example.com",
+            default_index_url="https://pypi.tuna.tsinghua.edu.cn/simple",
+        )
+
+        self.assertIn('$RawContent = Get-Content -Path $Path -Raw', rendered.powershell)
+        self.assertIn(
+            '$Content = if ($null -eq $RawContent) { "" } else { $RawContent }',
+            rendered.powershell,
+        )
+
 
 class DownloadTests(unittest.TestCase):
     def test_download_python_assets_retries_http_502_then_succeeds(self) -> None:

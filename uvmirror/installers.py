@@ -113,7 +113,8 @@ $env:UV_DEFAULT_INDEX = "__DEFAULT_INDEX_URL__"
         New-Item -ItemType File -Path $Path -Force | Out-Null
     }
 
-    $Content = Get-Content -Path $Path -Raw
+    $RawContent = Get-Content -Path $Path -Raw
+    $Content = if ($null -eq $RawContent) { "" } else { $RawContent }
     if ($Content -match '(?s)# >>> uv mirror managed block >>>.*?# <<< uv mirror managed block <<<') {
         $Content = [regex]::Replace($Content, '(?s)# >>> uv mirror managed block >>>.*?# <<< uv mirror managed block <<<\r?\n?', '')
     }
