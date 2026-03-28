@@ -77,14 +77,15 @@ https://uv.agentsmirror.com/pypi/simple
 
 ## 当前状态
 
-截至 `2026-03-18`，当前已完成以下真实验证：
+截至 `2026-03-29`，当前已完成以下真实验证：
 
 | 项目 | 当前结果 |
 | --- | --- |
 | 公网入口 | `https://uv.agentsmirror.com` 可访问 |
 | 安装脚本 | `install-cn.sh` / `install-cn.ps1` 可下载 |
-| `uv` 安装 | 已实测安装 `uv 0.10.11` |
-| Python 安装 | 已实测 `uv python install 3.12.13` 成功 |
+| `uv` 安装 | 已实测安装 `uv 0.11.2` |
+| Python 安装 | 已实测 `uv python install 3.12.12` 成功 |
+| `uv add` / `uv sync` 重依赖冒烟 | 已实测 `numpy 2.4.3`、`orjson 3.11.7`、`pillow 12.1.1`、`torch 2.11.0` |
 | 大陆服务器实测 | 上海 Ubuntu 服务器验证通过 |
 | 自动同步 | `Sync uv Assets` 已连续定时成功 |
 
@@ -190,6 +191,26 @@ python3 -m scripts.mirrorctl build-python-downloads \
   --output ./dist/metadata/python-downloads.json \
   --manifest-output ./dist/python-assets.json \
   --public-base-url https://uv.agentsmirror.com
+```
+
+### 运行重依赖 smoke
+
+```sh
+python3 -m scripts.uv_smoke
+```
+
+默认会：
+
+- 使用 `https://uv.agentsmirror.com/pypi/simple`
+- 使用 `https://uv.agentsmirror.com/metadata/python-downloads.json`
+- 创建临时项目并安装 `Python 3.12`
+- 分三步执行 `uv add pillow==12.1.1 orjson==3.11.7`、`uv add torch==2.11.0`、`uv add numpy==2.4.3`
+- 再执行 `uv sync --reinstall` 与导入验证
+
+如果你想保留临时项目目录方便排查，可以加：
+
+```sh
+python3 -m scripts.uv_smoke --keep-project
 ```
 
 ## 致谢
