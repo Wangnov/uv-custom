@@ -16,7 +16,7 @@ jobs:
       CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Validate deployment secrets
         shell: bash

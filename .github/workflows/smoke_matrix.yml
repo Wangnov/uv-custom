@@ -8,7 +8,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   SMOKE_BASE_URL: https://uv.agentsmirror.com
   SMOKE_PYTHON_VERSION: "3.12"
   SMOKE_DEPENDENCIES: pillow==12.1.1, orjson==3.11.7, torch==2.11.0, numpy==2.4.3
@@ -30,10 +29,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -312,7 +311,7 @@ jobs:
 
       - name: Upload smoke artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: smoke-${{ matrix.os }}
           path: ${{ runner.temp }}/smoke-artifact
