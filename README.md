@@ -216,6 +216,7 @@ python3 -m scripts.uv_smoke --keep-project
 ## 致谢
 
 - 感谢中国科学院高能物理研究所提供公益性质的 S3 存储桶支持
+- 感谢 [linux.do 社区](https://linux.do) 的支持与分享精神，使本项目获得了关键的资源信息
 - `uv` 与其官方 installer、Python 元数据能力来自 [astral-sh/uv](https://github.com/astral-sh/uv)
 - `CPython` managed runtime 资产来自 `python-build-standalone`
 - `PyPy` 资产来自 `downloads.python.org`
