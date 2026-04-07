@@ -75,6 +75,54 @@ https://uv.agentsmirror.com/pypi/simple
 
 为了让后续 `uv self update` 继续走镜像，profile 中还会写入一段受管块；如果你不想保留镜像环境变量，可以在安装后手动删除。
 
+## 恢复官方设置 / 退出镜像
+
+如果你之后不想继续使用本项目，不需要卸载 `uv`，只需要移除镜像相关配置即可；完成后，`uv` 会回到官方默认的下载与索引行为。
+
+### 1. 删除 profile 中的受管块
+
+安装脚本会在 shell profile 或 PowerShell profile 中写入一段受管块：
+
+```text
+# >>> uv mirror managed block >>>
+...
+# <<< uv mirror managed block <<<
+```
+
+删除这一整段即可。
+
+在 macOS / Linux 上，通常位于：
+
+- `~/.profile`
+- `~/.bashrc`
+- `~/.zshrc`
+
+在 Windows PowerShell 上，通常位于：
+
+- `$PROFILE`
+
+### 2. 恢复或清理 `uv.toml`
+
+安装脚本在修改 `uv.toml` 前会先备份旧文件。你可以直接恢复备份，也可以只删除镜像相关键。
+
+当前需要移除的是：
+
+- `python-downloads-json-url`
+- `pypy-install-mirror`
+
+如果你希望最稳妥地恢复到安装前状态，优先建议直接用安装时生成的备份文件覆盖当前 `uv.toml`。
+
+### 3. 清理额外环境变量
+
+如果你后来又手动设置过这些环境变量，也一并删除：
+
+- `UV_INSTALLER_GITHUB_BASE_URL`
+- `UV_PYTHON_DOWNLOADS_JSON_URL`
+- `UV_PYPY_INSTALL_MIRROR`
+- `UV_DEFAULT_INDEX`
+
+完成以上步骤后，后续 `uv self update`、`uv python install`、`uv add`、`uv sync`、`uv pip install` 等行为，就会重新回到官方默认链路。
+
 ## 当前状态
 
 截至 `2026-03-29`，当前已完成以下真实验证：
