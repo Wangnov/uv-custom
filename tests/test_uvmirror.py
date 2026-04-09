@@ -348,15 +348,23 @@ class FakeRetryableError(Exception):
         self.response = {"ResponseMetadata": {"HTTPStatusCode": status_code}}
 
 
+class ReadTimeoutError(Exception):
+    pass
+
+
 class FakeS3Client:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.fail_put_attempts = 0
         self.fail_create_multipart_attempts = 0
+        self.fail_put_errors: list[Exception] = []
+        self.fail_upload_part_errors: list[Exception] = []
         self.get_payload: bytes | None = None
 
     def put_object(self, **kwargs):
         self.calls.append(("put_object", kwargs))
+        if self.fail_put_errors:
+            raise self.fail_put_errors.pop(0)
         if self.fail_put_attempts > 0:
             self.fail_put_attempts -= 1
             raise FakeRetryableError(403)
@@ -371,6 +379,8 @@ class FakeS3Client:
 
     def upload_part(self, **kwargs):
         self.calls.append(("upload_part", kwargs))
+        if self.fail_upload_part_errors:
+            raise self.fail_upload_part_errors.pop(0)
         return {"ETag": f"etag-{kwargs['PartNumber']}"}
 
     def complete_multipart_upload(self, **kwargs):
@@ -544,6 +554,70 @@ class UploadTests(unittest.TestCase):
 
         self.assertEqual([name for name, _ in client.calls], ["put_object", "put_object", "put_object"])
         self.assertEqual(sleeps, [1.0, 2.0])
+
+    def test_put_object_retries_read_timeouts_before_succeeding(self) -> None:
+        client = FakeS3Client()
+        client.fail_put_errors = [ReadTimeoutError("timed out"), ReadTimeoutError("timed out")]
+        sleeps: list[float] = []
+        uploader = S3MirrorUploader(
+            client=client,
+            bucket="bucket",
+            multipart_threshold=8,
+            part_size=4,
+            max_attempts=3,
+            sleep=sleeps.append,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "metadata.json"
+            path.write_text("{}\n", encoding="utf-8")
+
+            uploader.upload_file(
+                local_path=path,
+                key="metadata/uv-latest.json",
+                cache_control="public, max-age=300",
+            )
+
+        self.assertEqual([name for name, _ in client.calls], ["put_object", "put_object", "put_object"])
+        self.assertEqual(sleeps, [1.0, 2.0])
+
+    def test_multipart_upload_retries_read_timeouts_before_succeeding(self) -> None:
+        client = FakeS3Client()
+        client.fail_upload_part_errors = [ReadTimeoutError("timed out")]
+        sleeps: list[float] = []
+        uploader = S3MirrorUploader(
+            client=client,
+            bucket="bucket",
+            multipart_threshold=4,
+            part_size=3,
+            max_attempts=2,
+            sleep=sleeps.append,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "asset.bin"
+            path.write_bytes(b"abcdefgh")
+
+            uploader.upload_file(
+                local_path=path,
+                key="python-build-standalone/releases/download/20260310/asset.bin",
+                cache_control="public, max-age=31536000, immutable",
+            )
+
+        self.assertEqual(
+            [name for name, _ in client.calls],
+            [
+                "create_multipart_upload",
+                "upload_part",
+                "abort_multipart_upload",
+                "create_multipart_upload",
+                "upload_part",
+                "upload_part",
+                "upload_part",
+                "complete_multipart_upload",
+            ],
+        )
+        self.assertEqual(sleeps, [1.0])
 
 
 if __name__ == "__main__":

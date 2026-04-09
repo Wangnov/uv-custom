@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import pathlib
+import socket
 import time
 from typing import Callable, Iterable
 
@@ -22,6 +23,14 @@ TEXT_LIKE_SUFFIXES = {
     ".yaml",
 }
 MAX_SINGLE_PUT_OBJECT_BYTES = 5 * 1024 * 1024 * 1024
+RETRYABLE_S3_STATUS_CODES = {403, 408, 409, 429, 500, 502, 503, 504}
+RETRYABLE_MULTIPART_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
+RETRYABLE_TRANSPORT_ERROR_NAMES = {
+    "ConnectTimeoutError",
+    "ConnectionClosedError",
+    "EndpointConnectionError",
+    "ReadTimeoutError",
+}
 
 
 def _content_type_for_path(path: pathlib.Path) -> str:
@@ -50,14 +59,40 @@ def _is_missing_key_error(exc: Exception) -> bool:
     return code in {"404", "NoSuchKey", "NotFound"}
 
 
+def _linked_exceptions(exc: BaseException) -> Iterable[BaseException]:
+    seen: set[int] = set()
+    pending = [exc]
+    while pending:
+        current = pending.pop()
+        current_id = id(current)
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+        yield current
+        for attr in ("__cause__", "__context__", "original_error", "reason"):
+            nested = getattr(current, attr, None)
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+
+
+def _is_retryable_transport_error(exc: Exception) -> bool:
+    # botocore and urllib3 use custom timeout/connection exception types.
+    for current in _linked_exceptions(exc):
+        if isinstance(current, (ConnectionError, TimeoutError, socket.timeout)):
+            return True
+        if current.__class__.__name__ in RETRYABLE_TRANSPORT_ERROR_NAMES:
+            return True
+    return False
+
+
 def _is_retryable_error(exc: Exception) -> bool:
     status_code = _status_code_from_exception(exc)
-    return status_code in {403, 408, 409, 429, 500, 502, 503, 504}
+    return status_code in RETRYABLE_S3_STATUS_CODES or _is_retryable_transport_error(exc)
 
 
 def _is_retryable_multipart_error(exc: Exception) -> bool:
     status_code = _status_code_from_exception(exc)
-    return status_code in {408, 409, 429, 500, 502, 503, 504}
+    return status_code in RETRYABLE_MULTIPART_STATUS_CODES or _is_retryable_transport_error(exc)
 
 
 def _should_fallback_to_put_object(exc: Exception, local_path: pathlib.Path) -> bool:
