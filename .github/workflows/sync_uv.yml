@@ -29,7 +29,10 @@ jobs:
       MIRROR_PART_SIZE_BYTES: "134217728"
       MIRROR_MAX_ATTEMPTS: "24"
       MIRROR_BACKOFF_SECONDS: "5"
+      MIRROR_MAX_BACKOFF_SECONDS: "60"
       MIRROR_REQUEST_INTERVAL_SECONDS: "2"
+      MIRROR_CONNECT_TIMEOUT_SECONDS: "10"
+      MIRROR_READ_TIMEOUT_SECONDS: "300"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -92,9 +95,10 @@ jobs:
             --default-index-url "${PUBLIC_BASE_URL%/}/pypi/simple" \
             --output-dir "$stage_dir"
 
-          python3 -m scripts.mirrorctl upload-dir \
+          python3 -m scripts.mirrorctl sync-dir-with-state \
             --local-dir "$versioned_dir" \
             --prefix "$(with_prefix "github/astral-sh/uv/releases/download/$uv_tag")" \
+            --state-key "$(with_prefix "state/github/astral-sh/uv/releases/download/$uv_tag.json")" \
             --cache-control "public, max-age=31536000, immutable"
 
           python3 -m scripts.mirrorctl upload-dir \

@@ -7,7 +7,11 @@ import socket
 import time
 from typing import Callable, Iterable
 
-from uvmirror.metadata import build_state_manifest, diff_stale_keys
+from uvmirror.metadata import (
+    build_state_manifest,
+    diff_stale_keys,
+    state_manifest_file_sizes,
+)
 
 TEXT_LIKE_SUFFIXES = {
     ".json",
@@ -31,6 +35,7 @@ RETRYABLE_TRANSPORT_ERROR_NAMES = {
     "EndpointConnectionError",
     "ReadTimeoutError",
 }
+DEFAULT_MAX_BACKOFF_SECONDS = 60.0
 
 
 def _content_type_for_path(path: pathlib.Path) -> str:
@@ -112,6 +117,7 @@ class S3MirrorUploader:
         enable_multipart: bool = True,
         max_attempts: int = 8,
         backoff_seconds: float = 1.0,
+        max_backoff_seconds: float = DEFAULT_MAX_BACKOFF_SECONDS,
         request_interval: float = 0.0,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -122,6 +128,7 @@ class S3MirrorUploader:
         self.enable_multipart = enable_multipart
         self.max_attempts = max_attempts
         self.backoff_seconds = backoff_seconds
+        self.max_backoff_seconds = max_backoff_seconds
         self.request_interval = request_interval
         self.sleep = sleep
 
@@ -133,10 +140,7 @@ class S3MirrorUploader:
     ) -> None:
         if self.enable_multipart and self._should_use_multipart(local_path):
             try:
-                self._retry(
-                    lambda: self._multipart_upload(local_path, key, cache_control),
-                    is_retryable=_is_retryable_multipart_error,
-                )
+                self._multipart_upload(local_path, key, cache_control)
                 return
             except Exception as exc:  # noqa: BLE001
                 if not _should_fallback_to_put_object(exc, local_path):
@@ -150,9 +154,7 @@ class S3MirrorUploader:
         cache_control: str,
     ) -> list[str]:
         uploaded_keys: list[str] = []
-        for file_path in sorted(path for path in local_dir.rglob("*") if path.is_file()):
-            relative = file_path.relative_to(local_dir).as_posix()
-            key = f"{remote_prefix.rstrip('/')}/{relative}"
+        for file_path, key, _ in self._iter_local_files(local_dir, remote_prefix):
             self.upload_file(file_path, key, cache_control)
             uploaded_keys.append(key)
         return uploaded_keys
@@ -172,7 +174,7 @@ class S3MirrorUploader:
     def save_state_manifest(
         self,
         key: str,
-        keys: Iterable[str],
+        keys: Iterable[str] | Iterable[dict[str, object]],
         cache_control: str = "public, max-age=300",
     ) -> None:
         body = json.dumps(build_state_manifest(keys), indent=2, sort_keys=True).encode("utf-8") + b"\n"
@@ -205,8 +207,21 @@ class S3MirrorUploader:
         state_key: str,
     ) -> list[str]:
         previous_manifest = self.load_state_manifest(state_key)
-        current_keys = self.upload_directory(local_dir, remote_prefix, cache_control)
-        self.save_state_manifest(state_key, current_keys)
+        previous_sizes = state_manifest_file_sizes(previous_manifest)
+        current_entries: list[dict[str, object]] = []
+        current_keys: list[str] = []
+
+        # These prefixes only hold immutable upstream artifacts, so an existing
+        # key with the same recorded size can be treated as already synced.
+        for file_path, key, size in self._iter_local_files(local_dir, remote_prefix):
+            current_entries.append({"key": key, "size": size})
+            current_keys.append(key)
+            previous_size = previous_sizes.get(key)
+            if key in previous_sizes and (previous_size is None or previous_size == size):
+                continue
+            self.upload_file(file_path, key, cache_control)
+
+        self.save_state_manifest(state_key, current_entries)
         stale_keys = diff_stale_keys(previous_manifest, current_keys)
         self.delete_keys(stale_keys)
         return current_keys
@@ -223,12 +238,15 @@ class S3MirrorUploader:
             )
 
     def _multipart_upload(self, local_path: pathlib.Path, key: str, cache_control: str):
-        upload = self._call(
-            "create_multipart_upload",
-            Bucket=self.bucket,
-            Key=key,
-            CacheControl=cache_control,
-            ContentType=_content_type_for_path(local_path),
+        upload = self._retry(
+            lambda: self._call(
+                "create_multipart_upload",
+                Bucket=self.bucket,
+                Key=key,
+                CacheControl=cache_control,
+                ContentType=_content_type_for_path(local_path),
+            ),
+            is_retryable=_is_retryable_multipart_error,
         )
         upload_id = upload["UploadId"]
         parts: list[dict[str, object]] = []
@@ -239,32 +257,51 @@ class S3MirrorUploader:
                     chunk = handle.read(self.part_size)
                     if not chunk:
                         break
-                    response = self._call(
-                        "upload_part",
-                        Bucket=self.bucket,
-                        Key=key,
-                        UploadId=upload_id,
-                        PartNumber=part_number,
-                        Body=chunk,
+                    response = self._retry(
+                        lambda chunk=chunk, part_number=part_number: self._call(
+                            "upload_part",
+                            Bucket=self.bucket,
+                            Key=key,
+                            UploadId=upload_id,
+                            PartNumber=part_number,
+                            Body=chunk,
+                        ),
+                        is_retryable=_is_retryable_multipart_error,
                     )
                     parts.append({"ETag": response["ETag"], "PartNumber": part_number})
                     part_number += 1
 
-            return self._call(
-                "complete_multipart_upload",
-                Bucket=self.bucket,
-                Key=key,
-                UploadId=upload_id,
-                MultipartUpload={"Parts": parts},
+            return self._retry(
+                lambda: self._call(
+                    "complete_multipart_upload",
+                    Bucket=self.bucket,
+                    Key=key,
+                    UploadId=upload_id,
+                    MultipartUpload={"Parts": parts},
+                ),
+                is_retryable=_is_retryable_multipart_error,
             )
         except Exception:  # noqa: BLE001
-            self._call(
-                "abort_multipart_upload",
-                Bucket=self.bucket,
-                Key=key,
-                UploadId=upload_id,
-            )
+            try:
+                self._call(
+                    "abort_multipart_upload",
+                    Bucket=self.bucket,
+                    Key=key,
+                    UploadId=upload_id,
+                )
+            except Exception:  # noqa: BLE001
+                pass
             raise
+
+    def _iter_local_files(
+        self,
+        local_dir: pathlib.Path,
+        remote_prefix: str,
+    ) -> Iterable[tuple[pathlib.Path, str, int]]:
+        prefix = remote_prefix.rstrip("/")
+        for file_path in sorted(path for path in local_dir.rglob("*") if path.is_file()):
+            relative = file_path.relative_to(local_dir).as_posix()
+            yield file_path, f"{prefix}/{relative}", file_path.stat().st_size
 
     def _should_use_multipart(self, local_path: pathlib.Path) -> bool:
         content_type = _content_type_for_path(local_path)
@@ -291,4 +328,8 @@ class S3MirrorUploader:
                 attempt += 1
                 if attempt >= self.max_attempts or not is_retryable(exc):
                     raise
-                self.sleep(self.backoff_seconds * float(2 ** (attempt - 1)))
+                delay = min(
+                    self.backoff_seconds * float(2 ** (attempt - 1)),
+                    self.max_backoff_seconds,
+                )
+                self.sleep(delay)

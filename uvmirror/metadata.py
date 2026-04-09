@@ -40,8 +40,33 @@ def keep_latest_runtime_builds(entries: Iterable[dict]) -> list[dict]:
     return selected
 
 
-def build_state_manifest(keys: Iterable[str]) -> dict[str, list[str]]:
-    return {"keys": sorted(set(keys))}
+def build_state_manifest(
+    keys: Iterable[str] | Iterable[dict[str, object]],
+) -> dict[str, object]:
+    manifest_keys: set[str] = set()
+    manifest_files: dict[str, int] = {}
+
+    for item in keys:
+        if isinstance(item, str):
+            manifest_keys.add(item)
+            continue
+
+        key = item.get("key")
+        size = item.get("size")
+        if not isinstance(key, str):
+            raise TypeError(f"state manifest entry is missing a string key: {item!r}")
+        if not isinstance(size, int):
+            raise TypeError(f"state manifest entry is missing an integer size: {item!r}")
+        manifest_keys.add(key)
+        manifest_files[key] = size
+
+    payload: dict[str, object] = {"keys": sorted(manifest_keys)}
+    if manifest_files:
+        payload["files"] = [
+            {"key": key, "size": size}
+            for key, size in sorted(manifest_files.items())
+        ]
+    return payload
 
 
 def diff_stale_keys(
@@ -51,6 +76,32 @@ def diff_stale_keys(
     previous_keys = set((previous_manifest or {}).get("keys", []))
     current_key_set = set(current_keys)
     return sorted(previous_keys - current_key_set)
+
+
+def state_manifest_file_sizes(
+    manifest: dict[str, object] | None,
+) -> dict[str, int | None]:
+    if manifest is None:
+        return {}
+
+    files = manifest.get("files")
+    if isinstance(files, list):
+        sizes: dict[str, int | None] = {}
+        for entry in files:
+            if not isinstance(entry, dict):
+                continue
+            key = entry.get("key")
+            size = entry.get("size")
+            if not isinstance(key, str):
+                continue
+            sizes[key] = size if isinstance(size, int) else None
+        if sizes:
+            return sizes
+
+    keys = manifest.get("keys", [])
+    if not isinstance(keys, list):
+        return {}
+    return {key: None for key in keys if isinstance(key, str)}
 
 
 def mirror_path_for_python_download_url(url: str) -> str:

@@ -13,6 +13,7 @@ from uvmirror.metadata import (
     keep_latest_runtime_builds,
     mirror_path_for_python_download_url,
     rewrite_python_download_url,
+    state_manifest_file_sizes,
 )
 from uvmirror.s3_upload import S3MirrorUploader
 from uvmirror.uv_releases import prune_uv_tags
@@ -54,6 +55,52 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(
             stale,
             ["python-build-standalone/releases/download/20260303/old.tar.zst"],
+        )
+
+    def test_build_state_manifest_can_record_file_sizes(self) -> None:
+        manifest = build_state_manifest(
+            [
+                {
+                    "key": "python-build-standalone/releases/download/20260310/a.tar.zst",
+                    "size": 123,
+                },
+                {
+                    "key": "python-build-standalone/releases/download/20260310/b.tar.zst",
+                    "size": 456,
+                },
+            ]
+        )
+
+        self.assertEqual(
+            manifest,
+            {
+                "files": [
+                    {
+                        "key": "python-build-standalone/releases/download/20260310/a.tar.zst",
+                        "size": 123,
+                    },
+                    {
+                        "key": "python-build-standalone/releases/download/20260310/b.tar.zst",
+                        "size": 456,
+                    },
+                ],
+                "keys": [
+                    "python-build-standalone/releases/download/20260310/a.tar.zst",
+                    "python-build-standalone/releases/download/20260310/b.tar.zst",
+                ],
+            },
+        )
+
+    def test_state_manifest_file_sizes_falls_back_to_legacy_keys(self) -> None:
+        self.assertEqual(
+            state_manifest_file_sizes(
+                {
+                    "keys": [
+                        "python-build-standalone/releases/download/20260310/a.tar.zst",
+                    ]
+                }
+            ),
+            {"python-build-standalone/releases/download/20260310/a.tar.zst": None},
         )
 
     def test_keep_latest_runtime_builds_selects_latest_per_runtime_name(self) -> None:
@@ -434,11 +481,52 @@ class UploadTests(unittest.TestCase):
 
         self.assertEqual(
             [name for name, _ in client.calls],
-            ["get_object", "put_object", "put_object", "delete_object"],
+            ["get_object", "put_object", "delete_object"],
         )
         self.assertEqual(
             client.calls[-1][1]["Key"],
             "python-build-standalone/releases/download/20260303/old.tar.zst",
+        )
+
+    def test_sync_directory_with_state_reuploads_when_recorded_size_changes(self) -> None:
+        client = FakeS3Client()
+        client.get_payload = (
+            b'{\n'
+            b'  "files": [\n'
+            b'    {\n'
+            b'      "key": "python-build-standalone/releases/download/20260310/current.tar.zst",\n'
+            b'      "size": 1\n'
+            b"    }\n"
+            b"  ],\n"
+            b'  "keys": [\n'
+            b'    "python-build-standalone/releases/download/20260310/current.tar.zst"\n'
+            b"  ]\n"
+            b"}\n"
+        )
+        uploader = S3MirrorUploader(
+            client=client,
+            bucket="bucket",
+            multipart_threshold=64,
+            part_size=4,
+            max_attempts=1,
+            sleep=lambda _: None,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            current = root / "current.tar.zst"
+            current.write_bytes(b"data")
+
+            uploader.sync_directory_with_state(
+                local_dir=root,
+                remote_prefix="python-build-standalone/releases/download/20260310",
+                cache_control="public, max-age=31536000, immutable",
+                state_key="state/python-build-standalone.json",
+            )
+
+        self.assertEqual(
+            [name for name, _ in client.calls],
+            ["get_object", "put_object", "put_object"],
         )
 
     def test_small_file_uses_put_object_only(self) -> None:
@@ -609,8 +697,6 @@ class UploadTests(unittest.TestCase):
             [
                 "create_multipart_upload",
                 "upload_part",
-                "abort_multipart_upload",
-                "create_multipart_upload",
                 "upload_part",
                 "upload_part",
                 "upload_part",
@@ -618,6 +704,33 @@ class UploadTests(unittest.TestCase):
             ],
         )
         self.assertEqual(sleeps, [1.0])
+
+    def test_retry_backoff_is_capped(self) -> None:
+        client = FakeS3Client()
+        client.fail_put_attempts = 3
+        sleeps: list[float] = []
+        uploader = S3MirrorUploader(
+            client=client,
+            bucket="bucket",
+            multipart_threshold=8,
+            part_size=4,
+            max_attempts=4,
+            backoff_seconds=10,
+            max_backoff_seconds=12,
+            sleep=sleeps.append,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "metadata.json"
+            path.write_text("{}\n", encoding="utf-8")
+
+            uploader.upload_file(
+                local_path=path,
+                key="metadata/uv-latest.json",
+                cache_control="public, max-age=300",
+            )
+
+        self.assertEqual(sleeps, [10.0, 12, 12])
 
 
 if __name__ == "__main__":

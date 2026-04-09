@@ -28,7 +28,10 @@ jobs:
       MIRROR_PART_SIZE_BYTES: "134217728"
       MIRROR_MAX_ATTEMPTS: "24"
       MIRROR_BACKOFF_SECONDS: "5"
+      MIRROR_MAX_BACKOFF_SECONDS: "60"
       MIRROR_REQUEST_INTERVAL_SECONDS: "2"
+      MIRROR_CONNECT_TIMEOUT_SECONDS: "10"
+      MIRROR_READ_TIMEOUT_SECONDS: "300"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5

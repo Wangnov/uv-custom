@@ -106,7 +106,10 @@ def build_uploader_from_env() -> S3MirrorUploader:
         config=Config(
             signature_version="s3v4",
             s3={"addressing_style": "path"},
+            connect_timeout=float(os.environ.get("MIRROR_CONNECT_TIMEOUT_SECONDS", "10")),
+            read_timeout=float(os.environ.get("MIRROR_READ_TIMEOUT_SECONDS", "300")),
             retries={"max_attempts": 0},
+            tcp_keepalive=True,
         ),
     )
     return S3MirrorUploader(
@@ -119,6 +122,7 @@ def build_uploader_from_env() -> S3MirrorUploader:
         enable_multipart=_env_bool("MIRROR_ENABLE_MULTIPART", True),
         max_attempts=int(os.environ.get("MIRROR_MAX_ATTEMPTS", "24")),
         backoff_seconds=float(os.environ.get("MIRROR_BACKOFF_SECONDS", "5")),
+        max_backoff_seconds=float(os.environ.get("MIRROR_MAX_BACKOFF_SECONDS", "60")),
         request_interval=float(os.environ.get("MIRROR_REQUEST_INTERVAL_SECONDS", "2")),
     )
 
