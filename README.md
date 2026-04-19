@@ -53,10 +53,8 @@ powershell -ExecutionPolicy ByPass -c "irm https://uv.agentsmirror.com/install-c
 当前会自动写入这些配置：
 
 - `python-downloads-json-url`
-- `pypy-install-mirror`
 - `UV_INSTALLER_GITHUB_BASE_URL`
 - `UV_PYTHON_DOWNLOADS_JSON_URL`
-- `UV_PYPY_INSTALL_MIRROR`
 - `UV_DEFAULT_INDEX`
 
 其中 `UV_DEFAULT_INDEX` 现在默认写入：
@@ -72,6 +70,8 @@ https://uv.agentsmirror.com/pypi/simple
 - 清华源失败时由 Worker 回退到官方 `files.pythonhosted.org`
 
 如果本机已经存在 `uv.toml`，脚本会先备份，再只更新受管键。
+
+PyPy 下载地址由 `metadata/python-downloads.json` 统一提供。重跑 installer 会清理历史安装留下的 `pypy-install-mirror` 与 `UV_PYPY_INSTALL_MIRROR`。
 
 为了让后续 `uv self update` 继续走镜像，profile 中还会写入一段受管块；如果你不想保留镜像环境变量，可以在安装后手动删除。
 
@@ -108,7 +108,8 @@ https://uv.agentsmirror.com/pypi/simple
 当前需要移除的是：
 
 - `python-downloads-json-url`
-- `pypy-install-mirror`
+
+历史安装还可能带有 `pypy-install-mirror`，一起删除即可。
 
 如果你希望最稳妥地恢复到安装前状态，优先建议直接用安装时生成的备份文件覆盖当前 `uv.toml`。
 
@@ -118,8 +119,9 @@ https://uv.agentsmirror.com/pypi/simple
 
 - `UV_INSTALLER_GITHUB_BASE_URL`
 - `UV_PYTHON_DOWNLOADS_JSON_URL`
-- `UV_PYPY_INSTALL_MIRROR`
 - `UV_DEFAULT_INDEX`
+
+历史安装还可能带有 `UV_PYPY_INSTALL_MIRROR`，一起删除即可。
 
 完成以上步骤后，后续 `uv self update`、`uv python install`、`uv add`、`uv sync`、`uv pip install` 等行为，就会重新回到官方默认链路。
 

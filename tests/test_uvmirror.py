@@ -222,7 +222,6 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("UV_INSTALLER_GITHUB_BASE_URL", rendered.shell)
         self.assertIn("https://uv.example.com/github", rendered.shell)
         self.assertIn("UV_PYTHON_DOWNLOADS_JSON_URL", rendered.shell)
-        self.assertIn("UV_PYPY_INSTALL_MIRROR", rendered.shell)
         self.assertIn("UV_DEFAULT_INDEX", rendered.shell)
         self.assertIn("https://pypi.tuna.tsinghua.edu.cn/simple", rendered.shell)
         self.assertIn(
@@ -239,7 +238,7 @@ class InstallerTests(unittest.TestCase):
             rendered.shell,
         )
         self.assertIn(
-            'pypy-install-mirror = "%s/pypy"\\n',
+            'python-downloads-json-url\\ =*|pypy-install-mirror\\ =*)',
             rendered.shell,
         )
         self.assertNotIn(
@@ -247,6 +246,8 @@ class InstallerTests(unittest.TestCase):
             rendered.shell,
         )
         self.assertNotIn("printf '%s\n' \"$line\"", rendered.shell)
+        self.assertNotIn("UV_PYPY_INSTALL_MIRROR", rendered.shell)
+        self.assertNotIn('pypy-install-mirror = "%s/pypy"\\n', rendered.shell)
         self.assertIn("https://uv.example.com/github", rendered.powershell)
         self.assertIn("https://pypi.tuna.tsinghua.edu.cn/simple", rendered.powershell)
         self.assertIn(
@@ -261,9 +262,11 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn('python-install-mirror = "', rendered.shell)
         self.assertNotIn("UV_PYTHON_INSTALL_MIRROR", rendered.powershell)
         self.assertIn(
-            '$env:UV_PYPY_INSTALL_MIRROR = "$PublicBaseUrl/pypy"',
+            'if ($Line.Trim().StartsWith("pypy-install-mirror =")) { continue }',
             rendered.powershell,
         )
+        self.assertNotIn("UV_PYPY_INSTALL_MIRROR", rendered.powershell)
+        self.assertNotIn('pypy-install-mirror = "', rendered.powershell)
         self.assertLess(
             rendered.powershell.index(
                 '$env:UV_INSTALLER_GITHUB_BASE_URL = "$PublicBaseUrl/github"'

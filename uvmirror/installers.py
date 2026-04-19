@@ -14,7 +14,6 @@ append_managed_block() {
 # >>> uv mirror managed block >>>
 export UV_INSTALLER_GITHUB_BASE_URL="__PUBLIC_BASE_URL__/github"
 export UV_PYTHON_DOWNLOADS_JSON_URL="__PUBLIC_BASE_URL__/metadata/python-downloads.json"
-export UV_PYPY_INSTALL_MIRROR="__PUBLIC_BASE_URL__/pypy"
 export UV_DEFAULT_INDEX="__DEFAULT_INDEX_URL__"
 # <<< uv mirror managed block <<<
 EOF
@@ -61,7 +60,6 @@ write_uv_config() {
   fi
 
   printf 'python-downloads-json-url = "%s/metadata/python-downloads.json"\\n' "$PUBLIC_BASE_URL" >> "$tmp_file"
-  printf 'pypy-install-mirror = "%s/pypy"\\n' "$PUBLIC_BASE_URL" >> "$tmp_file"
   mv "$tmp_file" "$config_file"
 }
 
@@ -99,7 +97,6 @@ function Set-ManagedBlock {
 # >>> uv mirror managed block >>>
 $env:UV_INSTALLER_GITHUB_BASE_URL = "__PUBLIC_BASE_URL__/github"
 $env:UV_PYTHON_DOWNLOADS_JSON_URL = "__PUBLIC_BASE_URL__/metadata/python-downloads.json"
-$env:UV_PYPY_INSTALL_MIRROR = "__PUBLIC_BASE_URL__/pypy"
 $env:UV_DEFAULT_INDEX = "__DEFAULT_INDEX_URL__"
 # <<< uv mirror managed block <<<
 '@
@@ -164,13 +161,11 @@ function Set-UvConfig {
     }
 
     $Lines += 'python-downloads-json-url = "' + $PublicBaseUrl + '/metadata/python-downloads.json"'
-    $Lines += 'pypy-install-mirror = "' + $PublicBaseUrl + '/pypy"'
     [System.IO.File]::WriteAllText($ConfigFile, ($Lines -join "`r`n") + "`r`n", [System.Text.UTF8Encoding]::new($false))
 }
 
 $env:UV_INSTALLER_GITHUB_BASE_URL = "$PublicBaseUrl/github"
 $env:UV_PYTHON_DOWNLOADS_JSON_URL = "$PublicBaseUrl/metadata/python-downloads.json"
-$env:UV_PYPY_INSTALL_MIRROR = "$PublicBaseUrl/pypy"
 $env:UV_DEFAULT_INDEX = "__DEFAULT_INDEX_URL__"
 irm "$PublicBaseUrl/github/astral-sh/uv/releases/download/latest/uv-installer.ps1" | iex
 Set-UvConfig
