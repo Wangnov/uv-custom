@@ -8,6 +8,7 @@ import urllib.error
 from uvmirror.downloads import download_python_assets
 from uvmirror.installers import render_installers
 from uvmirror.metadata import (
+    build_rewritten_python_metadata,
     build_state_manifest,
     diff_stale_keys,
     keep_latest_runtime_builds,
@@ -202,6 +203,30 @@ class MetadataTests(unittest.TestCase):
             "graalpython/releases/download/graal-25.0.2/graalpy.tar.gz",
         )
 
+    def test_build_rewritten_python_metadata_can_keep_upstream_urls(self) -> None:
+        upstream_url = (
+            "https://github.com/astral-sh/python-build-standalone/releases/download/"
+            "20260718/cpython-3.12.13%2B20260718-aarch64-apple-darwin-install_only_stripped.tar.gz"
+        )
+        raw = {"cpython-3.12.13-darwin-aarch64-none": {"url": upstream_url, "name": "cpython"}}
+
+        rewritten = build_rewritten_python_metadata(raw, "https://uv.example.com")
+        self.assertEqual(
+            rewritten["cpython-3.12.13-darwin-aarch64-none"]["url"],
+            "https://uv.example.com/python-build-standalone/releases/download/20260718/"
+            "cpython-3.12.13-plus-20260718-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        )
+
+        # uv only accepts UV_PYTHON_INSTALL_MIRROR when the entry still carries the
+        # canonical upstream prefix, so this variant must be left untouched.
+        kept = build_rewritten_python_metadata(
+            raw, "https://uv.example.com", keep_upstream_urls=True
+        )
+        self.assertEqual(
+            kept["cpython-3.12.13-darwin-aarch64-none"]["url"], upstream_url
+        )
+        self.assertEqual(kept["cpython-3.12.13-darwin-aarch64-none"]["name"], "cpython")
+
 
 class ReleaseTests(unittest.TestCase):
     def test_prune_uv_tags_keeps_latest_n(self) -> None:
@@ -234,11 +259,11 @@ class InstallerTests(unittest.TestCase):
         )
         self.assertIn('printf \'%s\\n\' "$line"', rendered.shell)
         self.assertIn(
-            'python-downloads-json-url = "%s/metadata/python-downloads.json"\\n',
+            'python-downloads-json-url = "%s/metadata/python-downloads-upstream.json"\\n',
             rendered.shell,
         )
         self.assertIn(
-            'python-downloads-json-url\\ =*|pypy-install-mirror\\ =*)',
+            'python-downloads-json-url\\ =*|python-install-mirror\\ =*|pypy-install-mirror\\ =*)',
             rendered.shell,
         )
         self.assertNotIn(
@@ -246,8 +271,6 @@ class InstallerTests(unittest.TestCase):
             rendered.shell,
         )
         self.assertNotIn("printf '%s\n' \"$line\"", rendered.shell)
-        self.assertNotIn("UV_PYPY_INSTALL_MIRROR", rendered.shell)
-        self.assertNotIn('pypy-install-mirror = "%s/pypy"\\n', rendered.shell)
         self.assertIn("https://uv.example.com/github", rendered.powershell)
         self.assertIn("https://pypi.tuna.tsinghua.edu.cn/simple", rendered.powershell)
         self.assertIn(
@@ -255,18 +278,17 @@ class InstallerTests(unittest.TestCase):
             rendered.powershell,
         )
         self.assertIn(
-            '$env:UV_PYTHON_DOWNLOADS_JSON_URL = "$PublicBaseUrl/metadata/python-downloads.json"',
+            '$env:UV_PYTHON_DOWNLOADS_JSON_URL = "$PublicBaseUrl/metadata/python-downloads-upstream.json"',
             rendered.powershell,
         )
-        self.assertNotIn("UV_PYTHON_INSTALL_MIRROR", rendered.shell)
-        self.assertNotIn('python-install-mirror = "', rendered.shell)
-        self.assertNotIn("UV_PYTHON_INSTALL_MIRROR", rendered.powershell)
+        self.assertIn(
+            'if ($Line.Trim().StartsWith("python-install-mirror =")) { continue }',
+            rendered.powershell,
+        )
         self.assertIn(
             'if ($Line.Trim().StartsWith("pypy-install-mirror =")) { continue }',
             rendered.powershell,
         )
-        self.assertNotIn("UV_PYPY_INSTALL_MIRROR", rendered.powershell)
-        self.assertNotIn('pypy-install-mirror = "', rendered.powershell)
         self.assertLess(
             rendered.powershell.index(
                 '$env:UV_INSTALLER_GITHUB_BASE_URL = "$PublicBaseUrl/github"'
@@ -274,6 +296,50 @@ class InstallerTests(unittest.TestCase):
             rendered.powershell.index(
                 'irm "$PublicBaseUrl/github/astral-sh/uv/releases/download/latest/uv-installer.ps1" | iex'
             ),
+        )
+
+    def test_render_installers_ships_overridable_python_install_mirrors(self) -> None:
+        """The upstream-URL metadata endpoint makes UV_PYTHON_INSTALL_MIRROR usable again.
+
+        It was dropped in 9a4ebd8 because rewritten URLs made uv fail with
+        ``Error::Mirror``; serving upstream URLs removes that conflict.
+        """
+        rendered = render_installers(
+            public_base_url="https://uv.example.com",
+            default_index_url="https://pypi.tuna.tsinghua.edu.cn/simple",
+        )
+
+        # Defaults are only applied when the user has not set their own value.
+        self.assertIn(
+            'export UV_PYTHON_INSTALL_MIRROR="${UV_PYTHON_INSTALL_MIRROR:-'
+            'https://uv.example.com/python-build-standalone/releases/download}"',
+            rendered.shell,
+        )
+        self.assertIn(
+            'export UV_PYPY_INSTALL_MIRROR="${UV_PYPY_INSTALL_MIRROR:-'
+            'https://uv.example.com/pypy}"',
+            rendered.shell,
+        )
+        self.assertIn(
+            'export UV_PYTHON_DOWNLOADS_JSON_URL="${UV_PYTHON_DOWNLOADS_JSON_URL:-'
+            'https://uv.example.com/metadata/python-downloads-upstream.json}"',
+            rendered.shell,
+        )
+        self.assertIn(
+            'python-install-mirror = "%s/python-build-standalone/releases/download"\\n',
+            rendered.shell,
+        )
+        self.assertIn('pypy-install-mirror = "%s/pypy"\\n', rendered.shell)
+
+        self.assertIn(
+            'if (-not $env:UV_PYTHON_INSTALL_MIRROR) { $env:UV_PYTHON_INSTALL_MIRROR = '
+            '"https://uv.example.com/python-build-standalone/releases/download" }',
+            rendered.powershell,
+        )
+        self.assertIn(
+            'if (-not $env:UV_PYPY_INSTALL_MIRROR) { $env:UV_PYPY_INSTALL_MIRROR = '
+            '"https://uv.example.com/pypy" }',
+            rendered.powershell,
         )
 
     def test_render_installers_powershell_guards_against_empty_profile_content(self) -> None:

@@ -53,9 +53,15 @@ powershell -ExecutionPolicy ByPass -c "irm https://uv.agentsmirror.com/install-c
 当前会自动写入这些配置：
 
 - `python-downloads-json-url`
+- `python-install-mirror`
+- `pypy-install-mirror`
 - `UV_INSTALLER_GITHUB_BASE_URL`
 - `UV_PYTHON_DOWNLOADS_JSON_URL`
+- `UV_PYTHON_INSTALL_MIRROR`
+- `UV_PYPY_INSTALL_MIRROR`
 - `UV_DEFAULT_INDEX`
+
+受管块里的每个环境变量都是**默认值**而非强制值：如果你在此之前已经导出过同名变量，镜像会让位给你的设置，不需要删除 `uv.toml` 或受管块。
 
 其中 `UV_DEFAULT_INDEX` 现在默认写入：
 
@@ -71,9 +77,27 @@ https://uv.agentsmirror.com/pypi/simple
 
 如果本机已经存在 `uv.toml`，脚本会先备份，再只更新受管键。
 
-PyPy 下载地址由 `metadata/python-downloads.json` 统一提供。重跑 installer 会清理历史安装留下的 `pypy-install-mirror` 与 `UV_PYPY_INSTALL_MIRROR`。
+PyPy 下载地址由 `metadata/python-downloads-upstream.json` 统一提供。
 
 为了让后续 `uv self update` 继续走镜像，profile 中还会写入一段受管块；如果你不想保留镜像环境变量，可以在安装后手动删除。
+
+## 换用第三方 Python 下载源
+
+如果你希望 `uv python install` 走别的源（例如高校镜像），直接导出 `UV_PYTHON_INSTALL_MIRROR` 即可，**不需要删除 `uv.toml` 或受管块**：
+
+```bash
+export UV_PYTHON_INSTALL_MIRROR="https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone"
+uv python install 3.12.13
+```
+
+这一点依赖 `UV_PYTHON_DOWNLOADS_JSON_URL` 指向 `metadata/python-downloads-upstream.json`——该端点保留上游 GitHub 原始下载地址。uv 只有在能剥离官方前缀时才接受 `UV_PYTHON_INSTALL_MIRROR`，因此改写过 URL 的 `metadata/python-downloads.json` 会让它直接报错：
+
+```text
+A mirror was provided via `UV_PYTHON_INSTALL_MIRROR`,
+but the URL does not match the expected format
+```
+
+两个端点会同时提供，`metadata/python-downloads.json` 保留改写后的地址以兼容既有安装。
 
 ## 恢复官方设置 / 退出镜像
 
@@ -108,8 +132,8 @@ PyPy 下载地址由 `metadata/python-downloads.json` 统一提供。重跑 inst
 当前需要移除的是：
 
 - `python-downloads-json-url`
-
-历史安装还可能带有 `pypy-install-mirror`，一起删除即可。
+- `python-install-mirror`
+- `pypy-install-mirror`
 
 如果你希望最稳妥地恢复到安装前状态，优先建议直接用安装时生成的备份文件覆盖当前 `uv.toml`。
 
@@ -119,9 +143,9 @@ PyPy 下载地址由 `metadata/python-downloads.json` 统一提供。重跑 inst
 
 - `UV_INSTALLER_GITHUB_BASE_URL`
 - `UV_PYTHON_DOWNLOADS_JSON_URL`
+- `UV_PYTHON_INSTALL_MIRROR`
+- `UV_PYPY_INSTALL_MIRROR`
 - `UV_DEFAULT_INDEX`
-
-历史安装还可能带有 `UV_PYPY_INSTALL_MIRROR`，一起删除即可。
 
 完成以上步骤后，后续 `uv self update`、`uv python install`、`uv add`、`uv sync`、`uv pip install` 等行为，就会重新回到官方默认链路。
 
@@ -157,6 +181,7 @@ PyPy 下载地址由 `metadata/python-downloads.json` 统一提供。重跑 inst
   - `/install-cn.ps1`
   - `/metadata/uv-latest.json`
   - `/metadata/python-downloads.json`
+  - `/metadata/python-downloads-upstream.json`
 
 ## 镜像路径约定
 
@@ -169,6 +194,7 @@ PyPy 下载地址由 `metadata/python-downloads.json` 统一提供。重跑 inst
 /graalpython/releases/download/<build>/...
 /metadata/uv-latest.json
 /metadata/python-downloads.json
+/metadata/python-downloads-upstream.json
 /pypi/simple/<project>/
 /pypi/files/files.pythonhosted.org/...
 /install-cn.sh
@@ -191,12 +217,13 @@ PyPy 下载地址由 `metadata/python-downloads.json` 统一提供。重跑 inst
 
 - 每 6 小时拉取一次上游 `download-metadata.json`
 - 对 `CPython`、`PyPy`、`GraalPy` 各自只保留最新 build
-- 重写下载地址到公开镜像域名
+- 生成两份元数据：改写到镜像域名的 `python-downloads.json`，以及保留上游地址的 `python-downloads-upstream.json`
 - 上传并清理：
   - `/python-build-standalone/...`
   - `/pypy/...`
   - `/graalpython/...`
   - `/metadata/python-downloads.json`
+  - `/metadata/python-downloads-upstream.json`
 
 ## 默认 PyPI
 

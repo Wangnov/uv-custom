@@ -23,6 +23,7 @@ def build_python_downloads(
     output_path: pathlib.Path,
     public_base_url: str,
     manifest_output: pathlib.Path | None,
+    keep_upstream_urls: bool = False,
 ) -> None:
     raw_metadata = json.loads(input_path.read_text(encoding="utf-8"))
     selected_entries = keep_latest_runtime_builds(raw_metadata.values())
@@ -32,7 +33,9 @@ def build_python_downloads(
     trimmed = {
         key: value for key, value in raw_metadata.items() if key in selected_keys
     }
-    rewritten = build_rewritten_python_metadata(trimmed, public_base_url)
+    rewritten = build_rewritten_python_metadata(
+        trimmed, public_base_url, keep_upstream_urls=keep_upstream_urls
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         json.dumps(rewritten, indent=2, sort_keys=True) + "\n",
@@ -136,6 +139,14 @@ def main() -> None:
     python_downloads.add_argument("--output", type=pathlib.Path, required=True)
     python_downloads.add_argument("--public-base-url", required=True)
     python_downloads.add_argument("--manifest-output", type=pathlib.Path)
+    python_downloads.add_argument(
+        "--keep-upstream-urls",
+        action="store_true",
+        help=(
+            "Keep upstream download URLs verbatim so UV_PYTHON_INSTALL_MIRROR "
+            "stays usable and overridable."
+        ),
+    )
 
     download_python_assets_parser = subparsers.add_parser("download-python-assets")
     download_python_assets_parser.add_argument("--manifest", type=pathlib.Path, required=True)
@@ -179,6 +190,7 @@ def main() -> None:
             args.output,
             args.public_base_url,
             args.manifest_output,
+            keep_upstream_urls=args.keep_upstream_urls,
         )
         return
 

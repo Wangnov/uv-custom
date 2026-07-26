@@ -134,13 +134,23 @@ class RewrittenEntry:
 def build_rewritten_python_metadata(
     raw_metadata: dict[str, dict],
     public_base_url: str,
+    keep_upstream_urls: bool = False,
 ) -> dict[str, dict]:
+    """Build the ``python-downloads.json`` payload served to uv.
+
+    When ``keep_upstream_urls`` is set the upstream GitHub/python.org URLs are kept
+    verbatim. uv only honours ``UV_PYTHON_INSTALL_MIRROR`` when it can strip the
+    canonical upstream prefix off each entry, so rewriting the URLs here makes that
+    variable fail hard with ``Error::Mirror``. Keeping them lets callers point the
+    variable at this mirror by default and still override it with their own source.
+    """
     rewritten: dict[str, dict] = {}
     for key, entry in raw_metadata.items():
         rewritten_entry = dict(entry)
-        rewritten_entry["url"] = rewrite_python_download_url(
-            rewritten_entry["url"], public_base_url
-        )
+        if not keep_upstream_urls:
+            rewritten_entry["url"] = rewrite_python_download_url(
+                rewritten_entry["url"], public_base_url
+            )
         rewritten[key] = rewritten_entry
     return rewritten
 

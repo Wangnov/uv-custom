@@ -86,6 +86,15 @@ jobs:
             --manifest-output "$stage_dir/python-assets.json" \
             --public-base-url "$PUBLIC_BASE_URL"
 
+          # Same entry set, but with upstream URLs left intact so uv accepts
+          # UV_PYTHON_INSTALL_MIRROR. Served alongside the rewritten variant so
+          # existing installs keep resolving the old endpoint unchanged.
+          python3 -m scripts.mirrorctl build-python-downloads \
+            --input "$stage_dir/upstream-download-metadata.json" \
+            --output "$stage_dir/metadata/python-downloads-upstream.json" \
+            --public-base-url "$PUBLIC_BASE_URL" \
+            --keep-upstream-urls
+
           python3 -m scripts.mirrorctl download-python-assets \
             --manifest "$stage_dir/python-assets.json" \
             --stage-dir "$stage_dir"
@@ -117,4 +126,9 @@ jobs:
           python3 -m scripts.mirrorctl upload-file \
             --local-path "$stage_dir/metadata/python-downloads.json" \
             --key "$(with_prefix "metadata/python-downloads.json")" \
+            --cache-control "public, max-age=300"
+
+          python3 -m scripts.mirrorctl upload-file \
+            --local-path "$stage_dir/metadata/python-downloads-upstream.json" \
+            --key "$(with_prefix "metadata/python-downloads-upstream.json")" \
             --cache-control "public, max-age=300"
