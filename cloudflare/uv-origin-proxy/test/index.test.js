@@ -715,3 +715,66 @@ test("handles head requests for pypi simple json without reading a body", async 
   assert.equal(await response.text(), "");
   assert.equal(fetchCalls[1].method, "HEAD");
 });
+
+const PBS_BASE =
+  "https://uv.agentsmirror.com/python-build-standalone/releases/download/20260718";
+const SANITIZED_KEY =
+  "/20830-uv-custom/python-build-standalone/releases/download/20260718/cpython-3.12.13-plus-20260718-aarch64-apple-darwin-install_only_stripped.tar.gz";
+
+async function signedPathnameFor(url) {
+  const response = await worker.fetch(new Request(url), ENV);
+  assert.equal(response.status, 307);
+  return new URL(response.headers.get("location")).pathname;
+}
+
+test("resolves python assets whose filename keeps the upstream plus sign", async () => {
+  // This is the URL uv builds when UV_PYTHON_INSTALL_MIRROR points at the mirror.
+  const pathname = await signedPathnameFor(
+    `${PBS_BASE}/cpython-3.12.13+20260718-aarch64-apple-darwin-install_only_stripped.tar.gz`,
+  );
+
+  assert.equal(pathname, SANITIZED_KEY);
+});
+
+test("resolves python assets whose plus sign is percent-encoded", async () => {
+  const pathname = await signedPathnameFor(
+    `${PBS_BASE}/cpython-3.12.13%2B20260718-aarch64-apple-darwin-install_only_stripped.tar.gz`,
+  );
+
+  assert.equal(pathname, SANITIZED_KEY);
+});
+
+test("leaves already sanitized python asset keys untouched", async () => {
+  const pathname = await signedPathnameFor(
+    `${PBS_BASE}/cpython-3.12.13-plus-20260718-aarch64-apple-darwin-install_only_stripped.tar.gz`,
+  );
+
+  assert.equal(pathname, SANITIZED_KEY);
+});
+
+test("sanitizes pypy and graalpy asset paths as well", async () => {
+  assert.equal(
+    await signedPathnameFor(
+      "https://uv.agentsmirror.com/pypy/pypy3.11-v7.3.20+src-linux64.tar.bz2",
+    ),
+    "/20830-uv-custom/pypy/pypy3.11-v7.3.20-plus-src-linux64.tar.bz2",
+  );
+
+  assert.equal(
+    await signedPathnameFor(
+      "https://uv.agentsmirror.com/graalpython/releases/download/24.1/graalpy-24.1+1-linux.tar.gz",
+    ),
+    "/20830-uv-custom/graalpython/releases/download/24.1/graalpy-24.1-plus-1-linux.tar.gz",
+  );
+});
+
+test("does not rewrite plus signs outside python asset paths", async () => {
+  const pathname = await signedPathnameFor(
+    "https://uv.agentsmirror.com/github/astral-sh/uv/releases/download/latest/uv+installer.sh.gz",
+  );
+
+  assert.equal(
+    pathname,
+    "/20830-uv-custom/github/astral-sh/uv/releases/download/latest/uv+installer.sh.gz",
+  );
+});

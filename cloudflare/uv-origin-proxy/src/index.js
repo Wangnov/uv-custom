@@ -11,6 +11,16 @@ const REQUIRED_ENV_KEYS = [
 ];
 const DEFAULT_PRESIGN_TTL_SECONDS = 600;
 const PROXIED_SUFFIXES = [".json", ".ps1", ".sh"];
+// Object keys for Python runtimes are sanitized at sync time (see
+// `uvmirror.metadata.mirror_path_for_python_download_url`), so `+` and `%` in the
+// upstream filename become `-plus-` / `-pct-`. uv builds its own download URL by
+// appending the upstream suffix to `UV_PYTHON_INSTALL_MIRROR`, which keeps the raw
+// `+`. Normalizing here lets both spellings resolve to the same object.
+const PYTHON_ASSET_PREFIXES = [
+  "/python-build-standalone/releases/download/",
+  "/pypy/",
+  "/graalpython/releases/download/",
+];
 const textEncoder = new TextEncoder();
 
 export default {
@@ -51,6 +61,8 @@ export default {
     if (isPypiFileRequest(requestUrl.pathname)) {
       return proxyPypiFile(request, requestUrl, env);
     }
+
+    normalizePythonAssetPath(requestUrl);
 
     const signedUrl = await buildPresignedUrl(
       request.method,
@@ -438,6 +450,38 @@ function isResponseFresh(response, maxAgeSeconds) {
 
 function shouldProxyThroughWorker(pathname) {
   return PROXIED_SUFFIXES.some((suffix) => pathname.endsWith(suffix));
+}
+
+function isPythonAssetRequest(pathname) {
+  return PYTHON_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+}
+
+function sanitizePythonAssetSegment(segment) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(segment);
+  } catch {
+    // Leave malformed percent-escapes untouched; the origin decides the outcome.
+    return segment;
+  }
+  return decoded.replace(/%/g, "-pct-").replace(/\+/g, "-plus-");
+}
+
+/**
+ * Rewrite a Python runtime request in place so the raw upstream filename and the
+ * sanitized object key both resolve. Already-sanitized paths contain no `+` or `%`,
+ * so this is a no-op for them and stays idempotent.
+ */
+function normalizePythonAssetPath(requestUrl) {
+  if (!isPythonAssetRequest(requestUrl.pathname)) {
+    return requestUrl;
+  }
+
+  requestUrl.pathname = requestUrl.pathname
+    .split("/")
+    .map((segment) => sanitizePythonAssetSegment(segment))
+    .join("/");
+  return requestUrl;
 }
 
 function buildOriginUrl(originEndpoint, bucket, requestUrl, keyPrefix = "") {
