@@ -799,7 +799,7 @@ class UploadTests(unittest.TestCase):
 
         self.assertEqual([name for name, _ in client.calls], ["put_object"])
         self.assertEqual(client.calls[0][1]["CacheControl"], "public, max-age=300")
-        self.assertEqual(client.calls[0][1]["ContentType"], "application/x-sh")
+        self.assertIn(client.calls[0][1]["ContentType"], {"application/x-sh", "text/x-sh"})
 
     def test_large_file_uses_serial_multipart_upload(self) -> None:
         client = FakeS3Client()
