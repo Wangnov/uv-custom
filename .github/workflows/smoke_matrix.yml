@@ -43,13 +43,15 @@ jobs:
           set -euo pipefail
 
           artifact_dir="$RUNNER_TEMP/smoke-artifact"
-          config_file="${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml"
+          config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/uv"
+          config_file="$config_dir/uv.toml"
+          receipt_file="$config_dir/uv-receipt.json"
 
           mkdir -p "$artifact_dir"
-          mkdir -p "$HOME/.local/bin" "$(dirname "$config_file")"
+          mkdir -p "$HOME/.local/bin" "$config_dir"
 
           rm -f "$HOME/.local/bin/uv" "$HOME/.local/bin/uvx" "$HOME/.local/bin/uvw"
-          rm -f "$config_file"
+          rm -f "$config_file" "$receipt_file"
 
           : > "$HOME/.profile"
           : > "$HOME/.bashrc"
@@ -62,6 +64,8 @@ jobs:
           $artifactDir = Join-Path $env:RUNNER_TEMP 'smoke-artifact'
           $binDir = Join-Path $HOME '.local\bin'
           $configFile = Join-Path $env:APPDATA 'uv\uv.toml'
+          $receiptHome = if ($env:XDG_CONFIG_HOME) { Join-Path $env:XDG_CONFIG_HOME 'uv' } else { Join-Path $env:LOCALAPPDATA 'uv' }
+          $receiptFile = Join-Path $receiptHome 'uv-receipt.json'
           $profileDir = Split-Path -Parent $PROFILE
 
           New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
@@ -72,6 +76,7 @@ jobs:
           Remove-Item (Join-Path $binDir 'uvx.exe') -ErrorAction SilentlyContinue
           Remove-Item (Join-Path $binDir 'uvw.exe') -ErrorAction SilentlyContinue
           Remove-Item $configFile -ErrorAction SilentlyContinue
+          Remove-Item $receiptFile -ErrorAction SilentlyContinue
 
           [System.IO.File]::WriteAllText($PROFILE, '', [System.Text.UTF8Encoding]::new($false))
 
@@ -96,6 +101,17 @@ jobs:
             grep -F "$SMOKE_BASE_URL/pypi/files/files.pythonhosted.org/" "$json_path" >/dev/null
           done
 
+          for api_path in \
+            "/api/v3/repos/astral-sh/uv/releases" \
+            "/api/v3/repos/astral-sh/uv/releases/latest" \
+            "/github/api/v3/repos/astral-sh/uv/releases" \
+            "/github/api/v3/repos/astral-sh/uv/releases/latest"; do
+            curl -fsSI "$SMOKE_BASE_URL$api_path" >/dev/null
+            api_json="$artifact_dir/$(echo "$api_path" | tr '/' '_').json"
+            curl -fsSL "$SMOKE_BASE_URL$api_path" -o "$api_json"
+            grep -F "$SMOKE_BASE_URL/github/astral-sh/uv/releases/download/" "$api_json" >/dev/null
+          done
+
       - name: Probe PyPI proxy on Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -114,6 +130,24 @@ jobs:
             (Invoke-WebRequest -Uri "$env:SMOKE_BASE_URL/pypi/simple/$package/" -Headers $headers).Content |
               Set-Content -Path $jsonPath -Encoding UTF8
             Select-String -Path $jsonPath -Pattern "$($env:SMOKE_BASE_URL)/pypi/files/files.pythonhosted.org/" -SimpleMatch | Out-Null
+          }
+
+          foreach ($apiPath in @(
+            '/api/v3/repos/astral-sh/uv/releases',
+            '/api/v3/repos/astral-sh/uv/releases/latest',
+            '/github/api/v3/repos/astral-sh/uv/releases',
+            '/github/api/v3/repos/astral-sh/uv/releases/latest'
+          )) {
+            $headResp = Invoke-WebRequest -Uri "$($env:SMOKE_BASE_URL)$apiPath" -Method Head
+            if ($headResp.StatusCode -ne 200) {
+              throw "HEAD $apiPath returned $($headResp.StatusCode)"
+            }
+            $apiFile = Join-Path $artifactDir (($apiPath.Trim('/') -replace '/', '_') + '.json')
+            (Invoke-WebRequest -Uri "$($env:SMOKE_BASE_URL)$apiPath").Content |
+              Set-Content -Path $apiFile -Encoding UTF8
+            if (-not (Select-String -Path $apiFile -Pattern "$($env:SMOKE_BASE_URL)/github/astral-sh/uv/releases/download/" -SimpleMatch -Quiet)) {
+              throw "Missing rewritten asset download url in $apiPath"
+            }
           }
 
       - name: Install uv on Unix
@@ -137,7 +171,9 @@ jobs:
           set -euo pipefail
 
           artifact_dir="$RUNNER_TEMP/smoke-artifact"
-          config_file="${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml"
+          config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/uv"
+          config_file="$config_dir/uv.toml"
+          receipt_file="$config_dir/uv-receipt.json"
           summary_file="$artifact_dir/summary.txt"
 
           . "$HOME/.profile"
@@ -147,20 +183,29 @@ jobs:
 
           uv_path="$(command -v uv)"
           [ "$uv_path" = "$HOME/.local/bin/uv" ]
+          [ -f "$receipt_file" ]
 
           uv --version | tee "$artifact_dir/uv-version.txt"
 
           cp "$HOME/.profile" "$artifact_dir/profile.txt"
           cp "$config_file" "$artifact_dir/uv.toml"
+          cp "$receipt_file" "$artifact_dir/uv-receipt.json"
 
           grep -F '# >>> uv mirror managed block >>>' "$HOME/.profile" >/dev/null
-          grep -F "export UV_INSTALLER_GITHUB_BASE_URL=\"$SMOKE_BASE_URL/github\"" "$HOME/.profile" >/dev/null
-          grep -F "export UV_PYTHON_DOWNLOADS_JSON_URL=\"$SMOKE_BASE_URL/metadata/python-downloads.json\"" "$HOME/.profile" >/dev/null
-          grep -F "export UV_PYPY_INSTALL_MIRROR=\"$SMOKE_BASE_URL/pypy\"" "$HOME/.profile" >/dev/null
-          grep -F "export UV_DEFAULT_INDEX=\"$SMOKE_BASE_URL/pypi/simple\"" "$HOME/.profile" >/dev/null
+          grep -F "export UV_INSTALLER_GHE_BASE_URL=\"\${UV_INSTALLER_GHE_BASE_URL:-$SMOKE_BASE_URL/github}\"" "$HOME/.profile" >/dev/null
+          grep -F "export UV_PYTHON_DOWNLOADS_JSON_URL=\"\${UV_PYTHON_DOWNLOADS_JSON_URL:-$SMOKE_BASE_URL/metadata/python-downloads-upstream.json}\"" "$HOME/.profile" >/dev/null
+          grep -F "export UV_PYTHON_INSTALL_MIRROR=\"\${UV_PYTHON_INSTALL_MIRROR:-$SMOKE_BASE_URL/python-build-standalone/releases/download}\"" "$HOME/.profile" >/dev/null
+          grep -F "export UV_PYPY_INSTALL_MIRROR=\"\${UV_PYPY_INSTALL_MIRROR:-$SMOKE_BASE_URL/pypy}\"" "$HOME/.profile" >/dev/null
+          grep -F "export UV_DEFAULT_INDEX=\"\${UV_DEFAULT_INDEX:-$SMOKE_BASE_URL/pypi/simple}\"" "$HOME/.profile" >/dev/null
 
-          grep -F "python-downloads-json-url = \"$SMOKE_BASE_URL/metadata/python-downloads.json\"" "$config_file" >/dev/null
+          grep -F "python-downloads-json-url = \"$SMOKE_BASE_URL/metadata/python-downloads-upstream.json\"" "$config_file" >/dev/null
+          grep -F "python-install-mirror = \"$SMOKE_BASE_URL/python-build-standalone/releases/download\"" "$config_file" >/dev/null
           grep -F "pypy-install-mirror = \"$SMOKE_BASE_URL/pypy\"" "$config_file" >/dev/null
+
+          [ "${UV_INSTALLER_GHE_BASE_URL:-}" = "$SMOKE_BASE_URL/github" ]
+          [ -z "${UV_INSTALLER_GITHUB_BASE_URL:-}" ]
+          uv self update --dry-run
+          uv self update 0.11.5 --dry-run
 
           {
             echo "runner_os=$RUNNER_OS"
@@ -182,6 +227,8 @@ jobs:
           $artifactDir = Join-Path $env:RUNNER_TEMP 'smoke-artifact'
           $summaryFile = Join-Path $artifactDir 'summary.txt'
           $configFile = Join-Path $env:APPDATA 'uv\uv.toml'
+          $receiptHome = if ($env:XDG_CONFIG_HOME) { Join-Path $env:XDG_CONFIG_HOME 'uv' } else { Join-Path $env:LOCALAPPDATA 'uv' }
+          $receiptFile = Join-Path $receiptHome 'uv-receipt.json'
           $binDir = Join-Path $HOME '.local\bin'
           $expectedUvPath = Join-Path $binDir 'uv.exe'
 
@@ -193,21 +240,54 @@ jobs:
           if ($uvPath -ne $expectedUvPath) {
             throw "Expected uv at $expectedUvPath but found $uvPath"
           }
+          if (-not (Test-Path $receiptFile)) {
+            throw "Expected receipt at $receiptFile"
+          }
 
           $uvVersion = (& uv --version).Trim()
           Set-Content -Path (Join-Path $artifactDir 'uv-version.txt') -Value $uvVersion -Encoding UTF8
 
           Copy-Item $PROFILE (Join-Path $artifactDir 'profile.ps1')
           Copy-Item $configFile (Join-Path $artifactDir 'uv.toml')
+          Copy-Item $receiptFile (Join-Path $artifactDir 'uv-receipt.json')
 
-          Select-String -Path $PROFILE -Pattern '# >>> uv mirror managed block >>>' -SimpleMatch | Out-Null
-          Select-String -Path $PROFILE -Pattern '$env:UV_INSTALLER_GITHUB_BASE_URL = "https://uv.agentsmirror.com/github"' -SimpleMatch | Out-Null
-          Select-String -Path $PROFILE -Pattern '$env:UV_PYTHON_DOWNLOADS_JSON_URL = "https://uv.agentsmirror.com/metadata/python-downloads.json"' -SimpleMatch | Out-Null
-          Select-String -Path $PROFILE -Pattern '$env:UV_PYPY_INSTALL_MIRROR = "https://uv.agentsmirror.com/pypy"' -SimpleMatch | Out-Null
-          Select-String -Path $PROFILE -Pattern '$env:UV_DEFAULT_INDEX = "https://uv.agentsmirror.com/pypi/simple"' -SimpleMatch | Out-Null
+          foreach ($pattern in @(
+            '# >>> uv mirror managed block >>>',
+            '$env:UV_INSTALLER_GHE_BASE_URL = "https://uv.agentsmirror.com/github"',
+            '$env:UV_PYTHON_DOWNLOADS_JSON_URL = "https://uv.agentsmirror.com/metadata/python-downloads-upstream.json"',
+            '$env:UV_PYTHON_INSTALL_MIRROR = "https://uv.agentsmirror.com/python-build-standalone/releases/download"',
+            '$env:UV_PYPY_INSTALL_MIRROR = "https://uv.agentsmirror.com/pypy"',
+            '$env:UV_DEFAULT_INDEX = "https://uv.agentsmirror.com/pypi/simple"'
+          )) {
+            if (-not (Select-String -Path $PROFILE -Pattern $pattern -SimpleMatch -Quiet)) {
+              throw "Missing managed block pattern in profile: $pattern"
+            }
+          }
 
-          Select-String -Path $configFile -Pattern 'python-downloads-json-url = "https://uv.agentsmirror.com/metadata/python-downloads.json"' -SimpleMatch | Out-Null
-          Select-String -Path $configFile -Pattern 'pypy-install-mirror = "https://uv.agentsmirror.com/pypy"' -SimpleMatch | Out-Null
+          foreach ($pattern in @(
+            'python-downloads-json-url = "https://uv.agentsmirror.com/metadata/python-downloads-upstream.json"',
+            'python-install-mirror = "https://uv.agentsmirror.com/python-build-standalone/releases/download"',
+            'pypy-install-mirror = "https://uv.agentsmirror.com/pypy"'
+          )) {
+            if (-not (Select-String -Path $configFile -Pattern $pattern -SimpleMatch -Quiet)) {
+              throw "Missing config pattern in uv.toml: $pattern"
+            }
+          }
+
+          if ($env:UV_INSTALLER_GHE_BASE_URL -ne "$env:SMOKE_BASE_URL/github") {
+            throw "Expected UV_INSTALLER_GHE_BASE_URL to equal $($env:SMOKE_BASE_URL)/github, got $($env:UV_INSTALLER_GHE_BASE_URL)"
+          }
+          if ($env:UV_INSTALLER_GITHUB_BASE_URL) {
+            throw "Expected UV_INSTALLER_GITHUB_BASE_URL to be unset, got $($env:UV_INSTALLER_GITHUB_BASE_URL)"
+          }
+          & uv self update --dry-run
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          & uv self update 0.11.5 --dry-run
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
           @(
             "runner_os=$env:RUNNER_OS"
@@ -240,6 +320,8 @@ jobs:
           rm -rf "$project_dir"
           python3 -m scripts.uv_smoke \
             --python "$SMOKE_PYTHON_VERSION" \
+            --self-update-check always \
+            --self-update-target 0.11.5 \
             --project-dir "$project_dir" \
             --cache-dir "$project_dir/.uv-cache" \
             --keep-project \
@@ -281,6 +363,8 @@ jobs:
           Remove-Item $projectDir -Recurse -Force -ErrorAction SilentlyContinue
           & python -m scripts.uv_smoke `
             --python $env:SMOKE_PYTHON_VERSION `
+            --self-update-check always `
+            --self-update-target 0.11.5 `
             --project-dir $projectDir `
             --cache-dir (Join-Path $projectDir '.uv-cache') `
             --keep-project 2>&1 |

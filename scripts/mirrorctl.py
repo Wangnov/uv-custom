@@ -15,7 +15,7 @@ from uvmirror.metadata import (
     keep_latest_runtime_builds,
 )
 from uvmirror.s3_upload import S3MirrorUploader
-from uvmirror.uv_releases import prune_uv_tags
+from uvmirror.uv_releases import build_uv_releases_api_bundle, prune_uv_tags
 
 
 def build_python_downloads(
@@ -68,6 +68,24 @@ def write_uv_latest(output_path: pathlib.Path, public_base_url: str, tag: str) -
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def build_uv_releases_api(
+    releases_input: pathlib.Path,
+    latest_input: pathlib.Path,
+    public_base_url: str,
+    output_dir: pathlib.Path,
+) -> None:
+    releases_list = json.loads(releases_input.read_text(encoding="utf-8"))
+    latest_release = json.loads(latest_input.read_text(encoding="utf-8"))
+    bundle = build_uv_releases_api_bundle(releases_list, latest_release, public_base_url)
+    for rel_path, payload in bundle.items():
+        dest = output_dir / rel_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(
+            json.dumps(payload, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
 
 
 def _required_env(name: str) -> str:
@@ -162,6 +180,12 @@ def main() -> None:
     write_uv_latest_parser.add_argument("--public-base-url", required=True)
     write_uv_latest_parser.add_argument("--tag", required=True)
 
+    build_uv_releases_api_parser = subparsers.add_parser("build-uv-releases-api")
+    build_uv_releases_api_parser.add_argument("--releases-input", type=pathlib.Path, required=True)
+    build_uv_releases_api_parser.add_argument("--latest-input", type=pathlib.Path, required=True)
+    build_uv_releases_api_parser.add_argument("--public-base-url", required=True)
+    build_uv_releases_api_parser.add_argument("--output-dir", type=pathlib.Path, required=True)
+
     plan_uv_prune_parser = subparsers.add_parser("plan-uv-prune")
     plan_uv_prune_parser.add_argument("--keep", type=int, required=True)
     plan_uv_prune_parser.add_argument("tags", nargs="+")
@@ -229,6 +253,15 @@ def main() -> None:
 
     if args.command == "write-uv-latest":
         write_uv_latest(args.output, args.public_base_url, args.tag)
+        return
+
+    if args.command == "build-uv-releases-api":
+        build_uv_releases_api(
+            args.releases_input,
+            args.latest_input,
+            args.public_base_url,
+            args.output_dir,
+        )
         return
 
     if args.command == "plan-uv-prune":

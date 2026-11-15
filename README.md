@@ -47,7 +47,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://uv.agentsmirror.com/install-c
 `install-cn` 不会暴力改写官方 installer，而是尽量复用官方路径：
 
 - 直接分发官方 `uv-installer.sh` / `uv-installer.ps1`
-- 通过 `UV_INSTALLER_GITHUB_BASE_URL` 让官方 installer 改从镜像取 `uv` 二进制
+- 通过 `UV_INSTALLER_GHE_BASE_URL` 让官方 installer 和 `uv self update` 改从镜像取 `uv` 二进制与 Release 元数据
 - 安装完成后再写入国内镜像相关的 `uv.toml` 与受管环境变量
 
 当前会自动写入这些配置：
@@ -55,7 +55,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://uv.agentsmirror.com/install-c
 - `python-downloads-json-url`
 - `python-install-mirror`
 - `pypy-install-mirror`
-- `UV_INSTALLER_GITHUB_BASE_URL`
+- `UV_INSTALLER_GHE_BASE_URL`
 - `UV_PYTHON_DOWNLOADS_JSON_URL`
 - `UV_PYTHON_INSTALL_MIRROR`
 - `UV_PYPY_INSTALL_MIRROR`
@@ -141,7 +141,7 @@ but the URL does not match the expected format
 
 如果你后来又手动设置过这些环境变量，也一并删除：
 
-- `UV_INSTALLER_GITHUB_BASE_URL`
+- `UV_INSTALLER_GHE_BASE_URL`（以及旧版遗留的 `UV_INSTALLER_GITHUB_BASE_URL`）
 - `UV_PYTHON_DOWNLOADS_JSON_URL`
 - `UV_PYTHON_INSTALL_MIRROR`
 - `UV_PYPY_INSTALL_MIRROR`
@@ -189,6 +189,12 @@ but the URL does not match the expected format
 /github/astral-sh/uv/releases/download/<tag>/...
 /github/astral-sh/uv/releases/download/latest/uv-installer.sh
 /github/astral-sh/uv/releases/download/latest/uv-installer.ps1
+/api/v3/repos/astral-sh/uv/releases
+/api/v3/repos/astral-sh/uv/releases/latest
+/api/v3/repos/astral-sh/uv/releases/tags/<tag>
+/github/api/v3/repos/astral-sh/uv/releases
+/github/api/v3/repos/astral-sh/uv/releases/latest
+/github/api/v3/repos/astral-sh/uv/releases/tags/<tag>
 /python-build-standalone/releases/download/<build>/...
 /pypy/...
 /graalpython/releases/download/<build>/...
@@ -210,6 +216,7 @@ but the URL does not match the expected format
 - 上传最新版本与 `latest` 入口
 - 刷新：
   - `/metadata/uv-latest.json`
+  - `/github/api/v3/repos/astral-sh/uv/releases`（及 `/api/v3/...` 与 `/releases/latest`、`tags/<tag>` 入口）
   - `/install-cn.sh`
   - `/install-cn.ps1`
 
