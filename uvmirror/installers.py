@@ -14,7 +14,12 @@ append_managed_block() {
 # >>> uv mirror managed block >>>
 # Every value below is a default: export your own before this block (or in a later
 # profile line) and the mirror will step aside instead of overriding you.
-export UV_INSTALLER_GITHUB_BASE_URL="${UV_INSTALLER_GITHUB_BASE_URL:-__PUBLIC_BASE_URL__/github}"
+if [ "${UV_INSTALLER_GITHUB_BASE_URL:-}" = "__PUBLIC_BASE_URL__/github" ]; then
+  unset UV_INSTALLER_GITHUB_BASE_URL
+fi
+if [ -z "${UV_INSTALLER_GITHUB_BASE_URL:-}" ]; then
+  export UV_INSTALLER_GHE_BASE_URL="${UV_INSTALLER_GHE_BASE_URL:-__PUBLIC_BASE_URL__/github}"
+fi
 export UV_PYTHON_DOWNLOADS_JSON_URL="${UV_PYTHON_DOWNLOADS_JSON_URL:-__PUBLIC_BASE_URL__/metadata/python-downloads-upstream.json}"
 export UV_PYTHON_INSTALL_MIRROR="${UV_PYTHON_INSTALL_MIRROR:-__PUBLIC_BASE_URL__/python-build-standalone/releases/download}"
 export UV_PYPY_INSTALL_MIRROR="${UV_PYPY_INSTALL_MIRROR:-__PUBLIC_BASE_URL__/pypy}"
@@ -76,7 +81,7 @@ install_uv() {
   installer_file=$(mktemp)
   trap 'rm -f "$installer_file"' EXIT HUP INT TERM
   curl -LsSf "$PUBLIC_BASE_URL/github/astral-sh/uv/releases/download/latest/uv-installer.sh" -o "$installer_file"
-  env UV_INSTALLER_GITHUB_BASE_URL="$PUBLIC_BASE_URL/github" sh "$installer_file"
+  env -u UV_INSTALLER_GITHUB_BASE_URL UV_INSTALLER_GHE_BASE_URL="$PUBLIC_BASE_URL/github" sh "$installer_file"
   rm -f "$installer_file"
   trap - EXIT HUP INT TERM
 }
@@ -105,7 +110,8 @@ function Set-ManagedBlock {
     $ManagedBlock = @'
 # >>> uv mirror managed block >>>
 # Every value below is a default: set your own beforehand and the mirror steps aside.
-if (-not $env:UV_INSTALLER_GITHUB_BASE_URL) { $env:UV_INSTALLER_GITHUB_BASE_URL = "__PUBLIC_BASE_URL__/github" }
+if ($env:UV_INSTALLER_GITHUB_BASE_URL -eq "__PUBLIC_BASE_URL__/github") { Remove-Item Env:UV_INSTALLER_GITHUB_BASE_URL -ErrorAction SilentlyContinue }
+if (-not $env:UV_INSTALLER_GITHUB_BASE_URL -and -not $env:UV_INSTALLER_GHE_BASE_URL) { $env:UV_INSTALLER_GHE_BASE_URL = "__PUBLIC_BASE_URL__/github" }
 if (-not $env:UV_PYTHON_DOWNLOADS_JSON_URL) { $env:UV_PYTHON_DOWNLOADS_JSON_URL = "__PUBLIC_BASE_URL__/metadata/python-downloads-upstream.json" }
 if (-not $env:UV_PYTHON_INSTALL_MIRROR) { $env:UV_PYTHON_INSTALL_MIRROR = "__PUBLIC_BASE_URL__/python-build-standalone/releases/download" }
 if (-not $env:UV_PYPY_INSTALL_MIRROR) { $env:UV_PYPY_INSTALL_MIRROR = "__PUBLIC_BASE_URL__/pypy" }
@@ -179,7 +185,8 @@ function Set-UvConfig {
     [System.IO.File]::WriteAllText($ConfigFile, ($Lines -join "`r`n") + "`r`n", [System.Text.UTF8Encoding]::new($false))
 }
 
-$env:UV_INSTALLER_GITHUB_BASE_URL = "$PublicBaseUrl/github"
+Remove-Item Env:UV_INSTALLER_GITHUB_BASE_URL -ErrorAction SilentlyContinue
+$env:UV_INSTALLER_GHE_BASE_URL = "$PublicBaseUrl/github"
 $env:UV_PYTHON_DOWNLOADS_JSON_URL = "$PublicBaseUrl/metadata/python-downloads-upstream.json"
 $env:UV_PYTHON_INSTALL_MIRROR = "$PublicBaseUrl/python-build-standalone/releases/download"
 $env:UV_PYPY_INSTALL_MIRROR = "$PublicBaseUrl/pypy"

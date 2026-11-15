@@ -10,6 +10,16 @@ const REQUIRED_ENV_KEYS = [
   "S3_SECRET_ACCESS_KEY",
 ];
 const DEFAULT_PRESIGN_TTL_SECONDS = 600;
+const GITHUB_API_CACHE_TTL_SECONDS = 300;
+const GITHUB_API_TAG_CACHE_TTL_SECONDS = 3600;
+const GITHUB_RELEASES_PREFIXES = [
+  "/github/api/v3/repos/astral-sh/uv/releases",
+  "/api/v3/repos/astral-sh/uv/releases",
+];
+const UPSTREAM_UV_DOWNLOAD_PREFIX =
+  "https://github.com/astral-sh/uv/releases/download/";
+const UPSTREAM_GITHUB_API_PREFIX = "https://api.github.com/";
+const SAFE_GITHUB_TAG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/;
 const PROXIED_SUFFIXES = [".json", ".ps1", ".sh"];
 // Object keys for Python runtimes are sanitized at sync time (see
 // `uvmirror.metadata.mirror_path_for_python_download_url`), so `+` and `%` in the
@@ -60,6 +70,21 @@ export default {
 
     if (isPypiFileRequest(requestUrl.pathname)) {
       return proxyPypiFile(request, requestUrl, env);
+    }
+
+    const githubReleasesRoute = matchGithubReleasesRoute(requestUrl, env);
+    if (githubReleasesRoute) {
+      if ("error" in githubReleasesRoute) {
+        return githubReleasesRoute.error;
+      }
+      return proxyGithubReleases(
+        request,
+        requestUrl,
+        env,
+        config,
+        ctx,
+        githubReleasesRoute,
+      );
     }
 
     normalizePythonAssetPath(requestUrl);
@@ -119,13 +144,17 @@ function getConfig(env) {
 }
 
 function getPresignTtlSeconds(env) {
-  if (!env.S3_PRESIGN_TTL_SECONDS) {
-    return DEFAULT_PRESIGN_TTL_SECONDS;
+  return getPositiveIntEnv(env.S3_PRESIGN_TTL_SECONDS, DEFAULT_PRESIGN_TTL_SECONDS);
+}
+
+function getPositiveIntEnv(rawValue, fallback) {
+  if (!rawValue) {
+    return fallback;
   }
 
-  const parsed = Number.parseInt(env.S3_PRESIGN_TTL_SECONDS, 10);
+  const parsed = Number.parseInt(rawValue, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    return DEFAULT_PRESIGN_TTL_SECONDS;
+    return fallback;
   }
   return parsed;
 }
@@ -319,6 +348,435 @@ async function proxyPypiFile(request, requestUrl, env) {
   }
 
   return new Response("upstream file unavailable", { status: 502 });
+}
+
+function matchGithubReleasesRoute(requestUrl, env) {
+  const { pathname, searchParams } = requestUrl;
+  const matchedPrefix = GITHUB_RELEASES_PREFIXES.find(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+  if (!matchedPrefix) {
+    return null;
+  }
+
+  const apiPrefix = matchedPrefix.startsWith("/github/api/v3")
+    ? "/github/api/v3"
+    : "/api/v3";
+  const suffix = pathname.slice(matchedPrefix.length);
+
+  if (suffix === "" || suffix === "/") {
+    const page = parsePositiveBoundedInt(searchParams.get("page"), 1, 100);
+    const perPage = parsePositiveBoundedInt(searchParams.get("per_page"), 1, 100);
+    if (page === "invalid" || perPage === "invalid") {
+      return {
+        error: jsonResponse(
+          { error: "invalid_query", message: "Invalid pagination parameters" },
+          400,
+        ),
+      };
+    }
+
+    const isDefaultList =
+      (page === null || page === 1) && (perPage === null || perPage === 30);
+    const ttlSeconds = getPositiveIntEnv(
+      env.GITHUB_API_CACHE_TTL_SECONDS,
+      GITHUB_API_CACHE_TTL_SECONDS,
+    );
+    if (isDefaultList) {
+      return {
+        apiPrefix,
+        syncedKey: "github/api/v3/repos/astral-sh/uv/releases.json",
+        cacheKey: buildGithubApiCacheKey(
+          env,
+          "repos/astral-sh/uv/releases.json",
+        ),
+        upstreamPath: "/repos/astral-sh/uv/releases?per_page=30",
+        ttlSeconds,
+      };
+    }
+
+    const resolvedPage = page ?? 1;
+    const resolvedPerPage = perPage ?? 30;
+    return {
+      apiPrefix,
+      syncedKey: null,
+      cacheKey: buildGithubApiCacheKey(
+        env,
+        `repos/astral-sh/uv/releases-p${resolvedPage}-pp${resolvedPerPage}.json`,
+      ),
+      upstreamPath: `/repos/astral-sh/uv/releases?per_page=${resolvedPerPage}&page=${resolvedPage}`,
+      ttlSeconds,
+    };
+  }
+
+  if (suffix === "/latest" || suffix === "/latest/") {
+    return {
+      apiPrefix,
+      syncedKey: "github/api/v3/repos/astral-sh/uv/releases/latest.json",
+      cacheKey: buildGithubApiCacheKey(
+        env,
+        "repos/astral-sh/uv/releases/latest.json",
+      ),
+      upstreamPath: "/repos/astral-sh/uv/releases/latest",
+      ttlSeconds: getPositiveIntEnv(
+        env.GITHUB_API_CACHE_TTL_SECONDS,
+        GITHUB_API_CACHE_TTL_SECONDS,
+      ),
+    };
+  }
+
+  if (suffix.startsWith("/tags/")) {
+    const rawTag = suffix.slice("/tags/".length);
+    let tag;
+    try {
+      tag = decodeURIComponent(rawTag);
+    } catch {
+      return {
+        error: jsonResponse(
+          { error: "invalid_release_tag", message: "Invalid release tag" },
+          400,
+        ),
+      };
+    }
+    if (!tag || tag.includes("..") || !SAFE_GITHUB_TAG_PATTERN.test(tag)) {
+      return {
+        error: jsonResponse(
+          { error: "invalid_release_tag", message: "Invalid release tag" },
+          400,
+        ),
+      };
+    }
+
+    return {
+      apiPrefix,
+      syncedKey: `github/api/v3/repos/astral-sh/uv/releases/tags/${tag}.json`,
+      cacheKey: buildGithubApiCacheKey(
+        env,
+        `repos/astral-sh/uv/releases/tags/${tag}.json`,
+      ),
+      upstreamPath: `/repos/astral-sh/uv/releases/tags/${encodeURIComponent(tag)}`,
+      ttlSeconds: getPositiveIntEnv(
+        env.GITHUB_API_TAG_CACHE_TTL_SECONDS,
+        GITHUB_API_TAG_CACHE_TTL_SECONDS,
+      ),
+    };
+  }
+
+  return {
+    error: jsonResponse({ message: "Not Found" }, 404),
+  };
+}
+
+function parsePositiveBoundedInt(rawValue, min, max) {
+  if (rawValue === null) {
+    return null;
+  }
+  if (!/^[1-9]\d*$/.test(rawValue)) {
+    return "invalid";
+  }
+  const parsed = Number.parseInt(rawValue, 10);
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+    return "invalid";
+  }
+  return parsed;
+}
+
+function buildGithubApiCacheKey(env, suffix) {
+  const prefix = normalizeKeyPrefix(
+    env.GITHUB_API_CACHE_PREFIX || "github-api-cache",
+  );
+  return `${prefix}/${suffix}`;
+}
+
+async function proxyGithubReleases(request, requestUrl, env, config, ctx, route) {
+  if (route.syncedKey) {
+    const syncedResponse = await fetchFromS3Key(
+      request.method,
+      route.syncedKey,
+      config,
+      request.signal,
+    );
+    if (syncedResponse.ok) {
+      return buildGithubReleaseResponse(
+        request.method,
+        syncedResponse,
+        requestUrl.origin,
+        route.apiPrefix,
+        route.ttlSeconds,
+      );
+    }
+  }
+
+  const cachedResponse = await fetchFromS3Key(
+    request.method,
+    route.cacheKey,
+    config,
+    request.signal,
+  );
+  if (cachedResponse.ok && isResponseFresh(cachedResponse, route.ttlSeconds)) {
+    return buildGithubReleaseResponse(
+      request.method,
+      cachedResponse,
+      requestUrl.origin,
+      route.apiPrefix,
+      route.ttlSeconds,
+    );
+  }
+
+  const githubApiBase = (
+    env.GITHUB_API_UPSTREAM || "https://api.github.com"
+  ).replace(/\/+$/g, "");
+  const upstreamUrl = `${githubApiBase}${route.upstreamPath}`;
+  const upstreamHeaders = new Headers({
+    accept: "application/vnd.github+json",
+    "user-agent": "uv-custom-origin-proxy",
+    "x-github-api-version": "2022-11-28",
+  });
+  if (env.GITHUB_TOKEN) {
+    upstreamHeaders.set("authorization", `Bearer ${env.GITHUB_TOKEN}`);
+  }
+
+  let upstreamResponse = null;
+  try {
+    upstreamResponse = await fetch(
+      new Request(upstreamUrl, {
+        method: request.method,
+        headers: upstreamHeaders,
+        redirect: "manual",
+        signal: request.signal,
+      }),
+    );
+  } catch {
+    if (cachedResponse.ok) {
+      return buildGithubReleaseResponse(
+        request.method,
+        cachedResponse,
+        requestUrl.origin,
+        route.apiPrefix,
+        route.ttlSeconds,
+      );
+    }
+    return jsonResponse(
+      {
+        error: "upstream_unavailable",
+        message: "GitHub Releases API unavailable",
+      },
+      502,
+    );
+  }
+
+  if (!upstreamResponse.ok) {
+    if (
+      cachedResponse.ok &&
+      (upstreamResponse.status === 403 ||
+        upstreamResponse.status === 429 ||
+        upstreamResponse.status >= 500)
+    ) {
+      return buildGithubReleaseResponse(
+        request.method,
+        cachedResponse,
+        requestUrl.origin,
+        route.apiPrefix,
+        route.ttlSeconds,
+      );
+    }
+    return new Response(
+      request.method === "HEAD" ? null : upstreamResponse.body,
+      {
+        status: upstreamResponse.status,
+        statusText: upstreamResponse.statusText,
+        headers: {
+          "content-type":
+            upstreamResponse.headers.get("content-type") ||
+            "application/json; charset=utf-8",
+        },
+      },
+    );
+  }
+
+  if (request.method === "HEAD") {
+    return new Response(null, {
+      status: upstreamResponse.status,
+      statusText: upstreamResponse.statusText,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": `public, max-age=${route.ttlSeconds}`,
+      },
+    });
+  }
+
+  const payload = await upstreamResponse.json();
+  const rewritten = rewriteGithubReleasePayload(
+    payload,
+    requestUrl.origin,
+    route.apiPrefix,
+  );
+  const responseBody = JSON.stringify(rewritten);
+
+  if (typeof ctx?.waitUntil === "function") {
+    ctx.waitUntil(storeCacheEntry(route.cacheKey, responseBody, config));
+  }
+
+  return new Response(responseBody, {
+    status: upstreamResponse.status,
+    statusText: upstreamResponse.statusText,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": `public, max-age=${route.ttlSeconds}`,
+    },
+  });
+}
+
+async function buildGithubReleaseResponse(
+  method,
+  s3Response,
+  publicOrigin,
+  apiPrefix,
+  maxAgeSeconds,
+) {
+  const headers = {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": `public, max-age=${maxAgeSeconds}`,
+  };
+  if (method === "HEAD") {
+    return new Response(null, {
+      status: s3Response.status,
+      statusText: s3Response.statusText,
+      headers,
+    });
+  }
+
+  const rawText = await s3Response.text();
+  if (!needsGithubReleaseRewrite(rawText, publicOrigin)) {
+    return new Response(rawText, {
+      status: s3Response.status,
+      statusText: s3Response.statusText,
+      headers,
+    });
+  }
+
+  const payload = JSON.parse(rawText);
+  const rewritten = rewriteGithubReleasePayload(payload, publicOrigin, apiPrefix);
+  return new Response(JSON.stringify(rewritten), {
+    status: s3Response.status,
+    statusText: s3Response.statusText,
+    headers,
+  });
+}
+
+function needsGithubReleaseRewrite(rawText, publicOrigin) {
+  if (
+    rawText.includes(UPSTREAM_UV_DOWNLOAD_PREFIX) ||
+    rawText.includes(UPSTREAM_GITHUB_API_PREFIX)
+  ) {
+    return true;
+  }
+  return (
+    !rawText.includes(publicOrigin) &&
+    (rawText.includes("/github/astral-sh/uv/releases/download/") ||
+      rawText.includes("/api/v3/"))
+  );
+}
+
+function rewriteGithubReleasePayload(payload, publicOrigin, apiPrefix) {
+  if (Array.isArray(payload)) {
+    return payload.map((item) =>
+      rewriteSingleGithubRelease(item, publicOrigin, apiPrefix, false),
+    );
+  }
+  if (payload && typeof payload === "object") {
+    return rewriteSingleGithubRelease(payload, publicOrigin, apiPrefix, true);
+  }
+  return payload;
+}
+
+function rewriteSingleGithubRelease(release, publicOrigin, apiPrefix, includeBody) {
+  if (!release || typeof release !== "object") {
+    return release;
+  }
+
+  const rewritten = { ...release };
+  delete rewritten.author;
+  delete rewritten.reactions;
+  if (!includeBody) {
+    delete rewritten.body;
+  }
+
+  for (const field of [
+    "url",
+    "assets_url",
+    "upload_url",
+    "tarball_url",
+    "zipball_url",
+  ]) {
+    if (typeof rewritten[field] === "string") {
+      rewritten[field] = rewriteGithubApiUrl(
+        rewritten[field],
+        publicOrigin,
+        apiPrefix,
+      );
+    }
+  }
+
+  if (Array.isArray(release.assets)) {
+    rewritten.assets = release.assets.map((asset) => {
+      if (!asset || typeof asset !== "object") {
+        return asset;
+      }
+      const nextAsset = { ...asset };
+      delete nextAsset.uploader;
+      if (typeof nextAsset.browser_download_url === "string") {
+        nextAsset.browser_download_url = rewriteGithubDownloadUrl(
+          nextAsset.browser_download_url,
+          publicOrigin,
+        );
+      }
+      if (typeof nextAsset.url === "string") {
+        nextAsset.url = rewriteGithubApiUrl(
+          nextAsset.url,
+          publicOrigin,
+          apiPrefix,
+        );
+      }
+      return nextAsset;
+    });
+  }
+
+  return rewritten;
+}
+
+function rewriteGithubDownloadUrl(value, publicOrigin) {
+  if (value.startsWith(UPSTREAM_UV_DOWNLOAD_PREFIX)) {
+    const suffix = value.slice(UPSTREAM_UV_DOWNLOAD_PREFIX.length);
+    return `${publicOrigin}/github/astral-sh/uv/releases/download/${suffix}`;
+  }
+  try {
+    const parsed = new URL(value);
+    if (parsed.pathname.startsWith("/github/astral-sh/uv/releases/download/")) {
+      return `${publicOrigin}${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+  } catch {
+    return value;
+  }
+  return value;
+}
+
+function rewriteGithubApiUrl(value, publicOrigin, apiPrefix) {
+  if (value.startsWith(UPSTREAM_GITHUB_API_PREFIX)) {
+    return `${publicOrigin}${apiPrefix}/${value.slice(UPSTREAM_GITHUB_API_PREFIX.length)}`;
+  }
+  try {
+    const parsed = new URL(value);
+    for (const prefix of ["/github/api/v3/", "/api/v3/"]) {
+      if (parsed.pathname.startsWith(prefix)) {
+        const rest = parsed.pathname.slice(prefix.length);
+        return `${publicOrigin}${apiPrefix}/${rest}${parsed.search}${parsed.hash}`;
+      }
+    }
+  } catch {
+    return value;
+  }
+  return value;
 }
 
 async function fetchFromS3Key(method, key, config, signal) {

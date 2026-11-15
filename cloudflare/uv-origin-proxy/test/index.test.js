@@ -778,3 +778,327 @@ test("does not rewrite plus signs outside python asset paths", async () => {
     "/20830-uv-custom/github/astral-sh/uv/releases/download/latest/uv+installer.sh.gz",
   );
 });
+
+function makeUpstreamRelease(tag = "0.11.5") {
+  return {
+    url: `https://api.github.com/repos/astral-sh/uv/releases/100`,
+    assets_url: `https://api.github.com/repos/astral-sh/uv/releases/100/assets`,
+    html_url: `https://github.com/astral-sh/uv/releases/tag/${tag}`,
+    tag_name: tag,
+    name: tag,
+    draft: false,
+    prerelease: false,
+    published_at: "2026-04-01T00:00:00Z",
+    author: { login: "astral-bot" },
+    reactions: { total_count: 3 },
+    body: "Release notes",
+    assets: [
+      {
+        name: "uv-installer.sh",
+        size: 1234,
+        content_type: "application/x-sh",
+        url: "https://api.github.com/repos/astral-sh/uv/releases/assets/200",
+        browser_download_url: `https://github.com/astral-sh/uv/releases/download/${tag}/uv-installer.sh`,
+        uploader: { login: "astral-bot" },
+      },
+    ],
+  };
+}
+
+test("serves synced github releases latest from s3 for both /api/v3 and /github/api/v3", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    fetchCalls.push(request);
+    if (
+      /\/github\/api\/v3\/repos\/astral-sh\/uv\/releases\/latest\.json$/.test(
+        new URL(request.url).pathname,
+      )
+    ) {
+      return new Response(
+        JSON.stringify({
+          url: "https://uv.agentsmirror.com/api/v3/repos/astral-sh/uv/releases/100",
+          tag_name: "0.13.8",
+          name: "0.13.8",
+          draft: false,
+          prerelease: false,
+          published_at: "2026-11-12T17:03:07Z",
+          assets: [
+            {
+              name: "uv-installer.sh",
+              size: 1000,
+              content_type: "application/x-sh",
+              url: "https://uv.agentsmirror.com/api/v3/repos/astral-sh/uv/releases/assets/1002",
+              browser_download_url:
+                "https://uv.agentsmirror.com/github/astral-sh/uv/releases/download/0.13.8/uv-installer.sh",
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    throw new Error(`unexpected fetch: ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  for (const path of [
+    "/api/v3/repos/astral-sh/uv/releases/latest",
+    "/github/api/v3/repos/astral-sh/uv/releases/latest",
+  ]) {
+    const response = await worker.fetch(
+      new Request(`https://uv.agentsmirror.com${path}`),
+      { ...ENV, S3_KEY_PREFIX: "mirror2" },
+    );
+    assert.equal(response.status, 200);
+    assert.equal(
+      response.headers.get("content-type"),
+      "application/json; charset=utf-8",
+    );
+    const payload = await response.json();
+    assert.equal(payload.tag_name, "0.13.8");
+    assert.equal(
+      payload.assets[0].browser_download_url,
+      "https://uv.agentsmirror.com/github/astral-sh/uv/releases/download/0.13.8/uv-installer.sh",
+    );
+  }
+  assert.equal(fetchCalls.length, 2);
+});
+
+test("falls back to api.github.com on s3 miss, rewrites asset urls, and caches in s3", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    fetchCalls.push(request);
+    const pathname = new URL(request.url).pathname;
+
+    if (
+      /\/github\/api\/v3\/repos\/astral-sh\/uv\/releases\/tags\/0\.11\.5\.json$/.test(
+        pathname,
+      )
+    ) {
+      return new Response("missing", { status: 404 });
+    }
+    if (
+      /\/github-api-cache\/repos\/astral-sh\/uv\/releases\/tags\/0\.11\.5\.json$/.test(
+        pathname,
+      )
+    ) {
+      if (request.method === "GET") {
+        return new Response("missing", { status: 404 });
+      }
+      if (request.method === "PUT") {
+        return new Response("", { status: 200 });
+      }
+    }
+    if (
+      request.url ===
+      "https://api.github.com/repos/astral-sh/uv/releases/tags/0.11.5"
+    ) {
+      assert.equal(request.headers.get("user-agent"), "uv-custom-origin-proxy");
+      return new Response(JSON.stringify(makeUpstreamRelease("0.11.5")), {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      });
+    }
+    throw new Error(`unexpected fetch: ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const pending = [];
+  const response = await worker.fetch(
+    new Request(
+      "https://uv.agentsmirror.com/api/v3/repos/astral-sh/uv/releases/tags/0.11.5",
+    ),
+    { ...ENV, S3_KEY_PREFIX: "mirror2" },
+    {
+      waitUntil(promise) {
+        pending.push(promise);
+      },
+    },
+  );
+
+  assert.equal(response.status, 200);
+  await Promise.all(pending);
+
+  const payload = await response.json();
+  assert.equal(payload.tag_name, "0.11.5");
+  assert.equal(payload.author, undefined);
+  assert.equal(payload.reactions, undefined);
+  assert.equal(payload.assets[0].uploader, undefined);
+  assert.equal(
+    payload.assets[0].browser_download_url,
+    "https://uv.agentsmirror.com/github/astral-sh/uv/releases/download/0.11.5/uv-installer.sh",
+  );
+  assert.equal(
+    payload.url,
+    "https://uv.agentsmirror.com/api/v3/repos/astral-sh/uv/releases/100",
+  );
+  assert.equal(
+    payload.assets[0].url,
+    "https://uv.agentsmirror.com/api/v3/repos/astral-sh/uv/releases/assets/200",
+  );
+
+  const putRequest = fetchCalls.find((request) => request.method === "PUT");
+  assert.ok(putRequest);
+  assert.match(
+    putRequest.url,
+    /\/20830-uv-custom\/mirror2\/github-api-cache\/repos\/astral-sh\/uv\/releases\/tags\/0\.11\.5\.json\?/,
+  );
+});
+
+test("supports HEAD requests for github releases api routes", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    fetchCalls.push(request);
+    const pathname = new URL(request.url).pathname;
+
+    if (/\/github\/api\/v3\/repos\/astral-sh\/uv\/releases\.json$/.test(pathname)) {
+      assert.equal(request.method, "HEAD");
+      return new Response(null, { status: 200 });
+    }
+    throw new Error(`unexpected fetch: ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const response = await worker.fetch(
+    new Request(
+      "https://uv.agentsmirror.com/github/api/v3/repos/astral-sh/uv/releases",
+      { method: "HEAD" },
+    ),
+    ENV,
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(
+    response.headers.get("content-type"),
+    "application/json; charset=utf-8",
+  );
+  assert.equal(await response.text(), "");
+  assert.equal(fetchCalls.length, 1);
+});
+
+test("serves fresh cached github release tag from s3 without calling api.github.com", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    fetchCalls.push(request);
+    const pathname = new URL(request.url).pathname;
+
+    if (
+      /\/github\/api\/v3\/repos\/astral-sh\/uv\/releases\/tags\/0\.11\.5\.json$/.test(
+        pathname,
+      )
+    ) {
+      return new Response("missing", { status: 404 });
+    }
+    if (
+      /\/github-api-cache\/repos\/astral-sh\/uv\/releases\/tags\/0\.11\.5\.json$/.test(
+        pathname,
+      )
+    ) {
+      return new Response(
+        JSON.stringify(makeUpstreamRelease("0.11.5")),
+        {
+          status: 200,
+          headers: { "last-modified": new Date().toUTCString() },
+        },
+      );
+    }
+    throw new Error(`unexpected fetch: ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const response = await worker.fetch(
+    new Request(
+      "https://uv.agentsmirror.com/github/api/v3/repos/astral-sh/uv/releases/tags/0.11.5",
+    ),
+    ENV,
+  );
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(
+    payload.assets[0].browser_download_url,
+    "https://uv.agentsmirror.com/github/astral-sh/uv/releases/download/0.11.5/uv-installer.sh",
+  );
+  assert.equal(
+    payload.url,
+    "https://uv.agentsmirror.com/github/api/v3/repos/astral-sh/uv/releases/100",
+  );
+  assert.equal(fetchCalls.length, 2);
+});
+
+test("falls back to stale s3 cache when upstream github api errors", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const pathname = new URL(request.url).pathname;
+
+    if (
+      /\/github\/api\/v3\/repos\/astral-sh\/uv\/releases\.json$/.test(pathname)
+    ) {
+      return new Response("missing", { status: 404 });
+    }
+    if (
+      /\/github-api-cache\/repos\/astral-sh\/uv\/releases\.json$/.test(pathname)
+    ) {
+      return new Response(
+        JSON.stringify([makeUpstreamRelease("0.13.8")]),
+        {
+          status: 200,
+          headers: { "last-modified": new Date(0).toUTCString() },
+        },
+      );
+    }
+    if (
+      request.url ===
+      "https://api.github.com/repos/astral-sh/uv/releases?per_page=30"
+    ) {
+      return new Response(JSON.stringify({ message: "rate limit" }), {
+        status: 403,
+      });
+    }
+    throw new Error(`unexpected fetch: ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const response = await worker.fetch(
+    new Request("https://uv.agentsmirror.com/api/v3/repos/astral-sh/uv/releases"),
+    ENV,
+  );
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload[0].tag_name, "0.13.8");
+  assert.equal(payload[0].body, undefined);
+  assert.equal(
+    payload[0].assets[0].browser_download_url,
+    "https://uv.agentsmirror.com/github/astral-sh/uv/releases/download/0.13.8/uv-installer.sh",
+  );
+});
+
+test("rejects invalid github release tags and pagination params", async () => {
+  for (const badUrl of [
+    "https://uv.agentsmirror.com/api/v3/repos/astral-sh/uv/releases/tags/..%2Ffoo",
+    "https://uv.agentsmirror.com/github/api/v3/repos/astral-sh/uv/releases/tags/",
+    "https://uv.agentsmirror.com/api/v3/repos/astral-sh/uv/releases?page=0",
+  ]) {
+    const response = await worker.fetch(new Request(badUrl), ENV);
+    assert.equal(response.status, 400);
+  }
+});

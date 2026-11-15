@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pathlib
 import shlex
 import shutil
 import subprocess
 import tempfile
-from typing import Sequence
+from typing import Mapping, Sequence
 
 DEFAULT_PUBLIC_BASE_URL = "https://uv.agentsmirror.com"
 DEFAULT_PYTHON_VERSION = "3.12"
@@ -88,12 +89,62 @@ def _python_downloads_json_url(public_base_url: str) -> str:
     return f"{public_base_url.rstrip('/')}/metadata/python-downloads.json"
 
 
+def _ghe_base_url(public_base_url: str) -> str:
+    return f"{public_base_url.rstrip('/')}/github"
+
+
+def _uv_receipt_path(env: Mapping[str, str]) -> pathlib.Path | None:
+    xdg_config_home = env.get("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        return pathlib.Path(xdg_config_home) / "uv" / "uv-receipt.json"
+    if os.name == "nt":
+        local_app_data = env.get("LOCALAPPDATA")
+        if not local_app_data:
+            return None
+        return pathlib.Path(local_app_data) / "uv" / "uv-receipt.json"
+    home = env.get("HOME")
+    base = pathlib.Path(home) if home else pathlib.Path.home()
+    return base / ".config" / "uv" / "uv-receipt.json"
+
+
+def _receipt_matches_uv_bin(receipt_path: pathlib.Path, uv_bin: str) -> bool:
+    if not receipt_path.is_file():
+        return False
+    resolved_uv = shutil.which(uv_bin)
+    if resolved_uv is None:
+        return False
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    install_prefix = receipt.get("install_prefix")
+    if not isinstance(install_prefix, str) or not install_prefix:
+        return True
+    uv_path = pathlib.Path(resolved_uv)
+    uv_dirs = {uv_path.parent, uv_path.resolve().parent}
+    prefix_path = pathlib.Path(install_prefix)
+    expected_dirs = {
+        prefix_path,
+        prefix_path / "bin",
+        prefix_path.resolve(),
+        prefix_path.resolve() / "bin",
+    }
+    return bool(uv_dirs & expected_dirs)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--uv-bin", default="uv")
     parser.add_argument("--public-base-url", default=DEFAULT_PUBLIC_BASE_URL)
     parser.add_argument("--default-index-url")
     parser.add_argument("--python-downloads-json-url")
+    parser.add_argument("--ghe-base-url")
+    parser.add_argument(
+        "--self-update-check",
+        choices=("auto", "always", "skip"),
+        default="auto",
+    )
+    parser.add_argument("--self-update-target")
     parser.add_argument("--python", default=DEFAULT_PYTHON_VERSION)
     parser.add_argument("--project-dir", type=pathlib.Path)
     parser.add_argument("--cache-dir", type=pathlib.Path)
@@ -114,6 +165,7 @@ def main() -> None:
         args.python_downloads_json_url
         or _python_downloads_json_url(public_base_url)
     )
+    ghe_base_url = args.ghe_base_url or _ghe_base_url(public_base_url)
 
     auto_project_dir = args.project_dir is None
     project_dir = (
@@ -131,6 +183,8 @@ def main() -> None:
     cache_dir = args.cache_dir or (project_dir / ".uv-cache")
 
     env = os.environ.copy()
+    env.pop("UV_INSTALLER_GITHUB_BASE_URL", None)
+    env["UV_INSTALLER_GHE_BASE_URL"] = ghe_base_url
     env["UV_DEFAULT_INDEX"] = default_index_url
     env["UV_PYTHON_DOWNLOADS_JSON_URL"] = python_downloads_json_url
 
@@ -140,8 +194,53 @@ def main() -> None:
     try:
         print(f"Smoke project: {project_dir}", flush=True)
         print(f"Default index: {default_index_url}", flush=True)
+        print(f"GHE base URL: {ghe_base_url}", flush=True)
         print(f"Python downloads JSON: {python_downloads_json_url}", flush=True)
         print(f"Python version: {args.python}", flush=True)
+
+        if args.self_update_check != "skip":
+            receipt_path = _uv_receipt_path(env)
+            has_matching_receipt = receipt_path is not None and _receipt_matches_uv_bin(
+                receipt_path, args.uv_bin
+            )
+            if args.self_update_check == "always" and not has_matching_receipt:
+                raise SystemExit(
+                    f"standalone uv receipt not found or mismatched for {args.uv_bin}: {receipt_path}"
+                )
+            if has_matching_receipt:
+                _run_command(
+                    [
+                        args.uv_bin,
+                        "self",
+                        "update",
+                        "--dry-run",
+                        "--color",
+                        "never",
+                        "--no-progress",
+                    ],
+                    cwd=project_dir,
+                    env=env,
+                )
+                if args.self_update_target:
+                    _run_command(
+                        [
+                            args.uv_bin,
+                            "self",
+                            "update",
+                            args.self_update_target,
+                            "--dry-run",
+                            "--color",
+                            "never",
+                            "--no-progress",
+                        ],
+                        cwd=project_dir,
+                        env=env,
+                    )
+            else:
+                print(
+                    f"Skipping uv self update --dry-run (no matching standalone receipt at {receipt_path})",
+                    flush=True,
+                )
 
         _run_command(
             [

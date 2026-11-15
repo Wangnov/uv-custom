@@ -81,6 +81,8 @@ jobs:
 
           mkdir -p "$versioned_dir" "$latest_dir" "$stage_dir/metadata"
           gh release download "$uv_tag" --repo astral-sh/uv --dir "$versioned_dir"
+          gh api "repos/astral-sh/uv/releases/tags/$uv_tag" > "$stage_dir/uv-release-latest.json"
+          gh api "repos/astral-sh/uv/releases?per_page=30" > "$stage_dir/uv-releases-list.json"
 
           cp "$versioned_dir/uv-installer.sh" "$latest_dir/uv-installer.sh"
           cp "$versioned_dir/uv-installer.ps1" "$latest_dir/uv-installer.ps1"
@@ -89,6 +91,12 @@ jobs:
             --output "$stage_dir/metadata/uv-latest.json" \
             --public-base-url "$PUBLIC_BASE_URL" \
             --tag "$uv_tag"
+
+          python3 -m scripts.mirrorctl build-uv-releases-api \
+            --releases-input "$stage_dir/uv-releases-list.json" \
+            --latest-input "$stage_dir/uv-release-latest.json" \
+            --public-base-url "$PUBLIC_BASE_URL" \
+            --output-dir "$stage_dir"
 
           python3 -m scripts.mirrorctl render-installers \
             --public-base-url "$PUBLIC_BASE_URL" \
@@ -104,6 +112,11 @@ jobs:
           python3 -m scripts.mirrorctl upload-dir \
             --local-dir "$latest_dir" \
             --prefix "$(with_prefix "github/astral-sh/uv/releases/download/latest")" \
+            --cache-control "public, max-age=300"
+
+          python3 -m scripts.mirrorctl upload-dir \
+            --local-dir "$stage_dir/github/api/v3/repos/astral-sh/uv" \
+            --prefix "$(with_prefix "github/api/v3/repos/astral-sh/uv")" \
             --cache-control "public, max-age=300"
 
           python3 -m scripts.mirrorctl upload-file \

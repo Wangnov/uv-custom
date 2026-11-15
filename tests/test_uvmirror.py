@@ -1,6 +1,8 @@
 import hashlib
 import json
+import os
 import pathlib
+import subprocess
 import tempfile
 import unittest
 import urllib.error
@@ -17,7 +19,11 @@ from uvmirror.metadata import (
     state_manifest_file_sizes,
 )
 from uvmirror.s3_upload import S3MirrorUploader
-from uvmirror.uv_releases import prune_uv_tags
+from uvmirror.uv_releases import (
+    build_uv_releases_api_bundle,
+    prune_uv_tags,
+    rewrite_uv_release_payload,
+)
 
 
 class MetadataTests(unittest.TestCase):
@@ -236,6 +242,111 @@ class ReleaseTests(unittest.TestCase):
 
         self.assertEqual(stale, ["0.10.8", "0.10.7"])
 
+    def test_rewrite_uv_release_payload_rewrites_assets_and_api_urls(self) -> None:
+        raw = {
+            "url": "https://api.github.com/repos/astral-sh/uv/releases/123",
+            "assets_url": "https://api.github.com/repos/astral-sh/uv/releases/123/assets",
+            "html_url": "https://github.com/astral-sh/uv/releases/tag/0.13.8",
+            "tag_name": "0.13.8",
+            "name": "0.13.8",
+            "draft": False,
+            "prerelease": False,
+            "published_at": "2026-11-12T17:03:07Z",
+            "author": {"login": "bot"},
+            "reactions": {"total_count": 5},
+            "body": "Release notes",
+            "assets": [
+                {
+                    "name": "uv-installer.sh",
+                    "size": 1000,
+                    "content_type": "application/x-sh",
+                    "url": "https://api.github.com/repos/astral-sh/uv/releases/assets/99",
+                    "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.8/uv-installer.sh",
+                    "uploader": {"login": "bot"},
+                }
+            ],
+        }
+
+        rewritten = rewrite_uv_release_payload(raw, "https://uv.example.com/")
+        self.assertEqual(
+            rewritten["url"],
+            "https://uv.example.com/api/v3/repos/astral-sh/uv/releases/123",
+        )
+        self.assertEqual(
+            rewritten["html_url"],
+            "https://github.com/astral-sh/uv/releases/tag/0.13.8",
+        )
+        self.assertNotIn("author", rewritten)
+        self.assertNotIn("reactions", rewritten)
+        self.assertEqual(rewritten["body"], "Release notes")
+        asset = rewritten["assets"][0]
+        self.assertNotIn("uploader", asset)
+        self.assertEqual(
+            asset["browser_download_url"],
+            "https://uv.example.com/github/astral-sh/uv/releases/download/0.13.8/uv-installer.sh",
+        )
+        self.assertEqual(
+            asset["url"],
+            "https://uv.example.com/api/v3/repos/astral-sh/uv/releases/assets/99",
+        )
+
+    def test_build_uv_releases_api_bundle_outputs_list_latest_and_tag(self) -> None:
+        release = {
+            "url": "https://api.github.com/repos/astral-sh/uv/releases/123",
+            "tag_name": "0.13.8",
+            "name": "0.13.8",
+            "draft": False,
+            "prerelease": False,
+            "published_at": "2026-11-12T17:03:07Z",
+            "body": "Notes",
+            "assets": [
+                {
+                    "name": "uv-installer.sh",
+                    "size": 1000,
+                    "content_type": "application/x-sh",
+                    "url": "https://api.github.com/repos/astral-sh/uv/releases/assets/99",
+                    "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.8/uv-installer.sh",
+                }
+            ],
+        }
+
+        bundle = build_uv_releases_api_bundle(
+            [release], release, "https://uv.example.com"
+        )
+        self.assertEqual(
+            set(bundle.keys()),
+            {
+                "github/api/v3/repos/astral-sh/uv/releases.json",
+                "github/api/v3/repos/astral-sh/uv/releases/latest.json",
+                "github/api/v3/repos/astral-sh/uv/releases/tags/0.13.8.json",
+            },
+        )
+        self.assertNotIn(
+            "body",
+            bundle["github/api/v3/repos/astral-sh/uv/releases.json"][0],
+        )
+        self.assertEqual(
+            bundle["github/api/v3/repos/astral-sh/uv/releases/latest.json"]["body"],
+            "Notes",
+        )
+
+    def test_build_uv_releases_api_bundle_skips_unsafe_tag_key(self) -> None:
+        release = {
+            "url": "https://api.github.com/repos/astral-sh/uv/releases/123",
+            "tag_name": "../escape",
+            "assets": [],
+        }
+        bundle = build_uv_releases_api_bundle(
+            [release], release, "https://uv.example.com"
+        )
+        self.assertEqual(
+            set(bundle.keys()),
+            {
+                "github/api/v3/repos/astral-sh/uv/releases.json",
+                "github/api/v3/repos/astral-sh/uv/releases/latest.json",
+            },
+        )
+
 
 class InstallerTests(unittest.TestCase):
     def test_render_installers_injects_public_base_url_and_default_index(self) -> None:
@@ -244,7 +355,11 @@ class InstallerTests(unittest.TestCase):
             default_index_url="https://pypi.tuna.tsinghua.edu.cn/simple",
         )
 
-        self.assertIn("UV_INSTALLER_GITHUB_BASE_URL", rendered.shell)
+        self.assertIn(
+            'export UV_INSTALLER_GHE_BASE_URL="${UV_INSTALLER_GHE_BASE_URL:-https://uv.example.com/github}"',
+            rendered.shell,
+        )
+        self.assertNotIn("export UV_INSTALLER_GITHUB_BASE_URL=", rendered.shell)
         self.assertIn("https://uv.example.com/github", rendered.shell)
         self.assertIn("UV_PYTHON_DOWNLOADS_JSON_URL", rendered.shell)
         self.assertIn("UV_DEFAULT_INDEX", rendered.shell)
@@ -254,7 +369,7 @@ class InstallerTests(unittest.TestCase):
             rendered.shell,
         )
         self.assertIn(
-            'env UV_INSTALLER_GITHUB_BASE_URL="$PUBLIC_BASE_URL/github" sh "$installer_file"',
+            'env -u UV_INSTALLER_GITHUB_BASE_URL UV_INSTALLER_GHE_BASE_URL="$PUBLIC_BASE_URL/github" sh "$installer_file"',
             rendered.shell,
         )
         self.assertIn('printf \'%s\\n\' "$line"', rendered.shell)
@@ -274,6 +389,18 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("https://uv.example.com/github", rendered.powershell)
         self.assertIn("https://pypi.tuna.tsinghua.edu.cn/simple", rendered.powershell)
         self.assertIn(
+            'Remove-Item Env:UV_INSTALLER_GITHUB_BASE_URL -ErrorAction SilentlyContinue',
+            rendered.powershell,
+        )
+        self.assertIn(
+            '$env:UV_INSTALLER_GHE_BASE_URL = "$PublicBaseUrl/github"',
+            rendered.powershell,
+        )
+        self.assertIn(
+            '$env:UV_INSTALLER_GHE_BASE_URL = "https://uv.example.com/github"',
+            rendered.powershell,
+        )
+        self.assertNotIn(
             '$env:UV_INSTALLER_GITHUB_BASE_URL = "$PublicBaseUrl/github"',
             rendered.powershell,
         )
@@ -291,11 +418,62 @@ class InstallerTests(unittest.TestCase):
         )
         self.assertLess(
             rendered.powershell.index(
-                '$env:UV_INSTALLER_GITHUB_BASE_URL = "$PublicBaseUrl/github"'
+                'Remove-Item Env:UV_INSTALLER_GITHUB_BASE_URL -ErrorAction SilentlyContinue'
+            ),
+            rendered.powershell.index(
+                '$env:UV_INSTALLER_GHE_BASE_URL = "$PublicBaseUrl/github"'
+            ),
+        )
+        self.assertLess(
+            rendered.powershell.index(
+                '$env:UV_INSTALLER_GHE_BASE_URL = "$PublicBaseUrl/github"'
             ),
             rendered.powershell.index(
                 'irm "$PublicBaseUrl/github/astral-sh/uv/releases/download/latest/uv-installer.ps1" | iex'
             ),
+        )
+
+    def test_shell_managed_block_migrates_legacy_github_base_url(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX shell test")
+
+        rendered = render_installers(
+            public_base_url="https://uv.example.com",
+            default_index_url="https://uv.example.com/pypi/simple",
+        )
+        start = rendered.shell.index("# >>> uv mirror managed block >>>")
+        end = rendered.shell.index("# <<< uv mirror managed block <<<") + len(
+            "# <<< uv mirror managed block <<<"
+        )
+        managed_block = rendered.shell[start:end]
+
+        def eval_block(extra_env: dict[str, str]) -> dict[str, str]:
+            env = {"PATH": os.environ["PATH"], **extra_env}
+            proc = subprocess.run(
+                [
+                    "sh",
+                    "-eu",
+                    "-c",
+                    f'{managed_block}\nprintf "GH=%s\\nGHE=%s\\n" "${{UV_INSTALLER_GITHUB_BASE_URL:-}}" "${{UV_INSTALLER_GHE_BASE_URL:-}}"',
+                ],
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return dict(line.split("=", 1) for line in proc.stdout.strip().splitlines())
+
+        self.assertEqual(
+            eval_block({"UV_INSTALLER_GITHUB_BASE_URL": "https://uv.example.com/github"}),
+            {"GH": "", "GHE": "https://uv.example.com/github"},
+        )
+        self.assertEqual(
+            eval_block({"UV_INSTALLER_GITHUB_BASE_URL": "https://custom.example.com/github"}),
+            {"GH": "https://custom.example.com/github", "GHE": ""},
+        )
+        self.assertEqual(
+            eval_block({"UV_INSTALLER_GHE_BASE_URL": "https://custom-ghe.example.com/github"}),
+            {"GH": "", "GHE": "https://custom-ghe.example.com/github"},
         )
 
     def test_render_installers_ships_overridable_python_install_mirrors(self) -> None:
@@ -621,7 +799,7 @@ class UploadTests(unittest.TestCase):
 
         self.assertEqual([name for name, _ in client.calls], ["put_object"])
         self.assertEqual(client.calls[0][1]["CacheControl"], "public, max-age=300")
-        self.assertEqual(client.calls[0][1]["ContentType"], "application/x-sh")
+        self.assertIn(client.calls[0][1]["ContentType"], {"application/x-sh", "text/x-sh"})
 
     def test_large_file_uses_serial_multipart_upload(self) -> None:
         client = FakeS3Client()
