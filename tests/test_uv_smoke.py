@@ -20,7 +20,15 @@ class SmokeScriptTests(unittest.TestCase):
         )
         self.assertEqual(
             uv_smoke._python_downloads_json_url("https://uv.agentsmirror.com"),
-            "https://uv.agentsmirror.com/metadata/python-downloads.json",
+            "https://uv.agentsmirror.com/metadata/python-downloads-upstream.json",
+        )
+        self.assertEqual(
+            uv_smoke._python_install_mirror("https://uv.agentsmirror.com"),
+            "https://uv.agentsmirror.com/python-build-standalone/releases/download",
+        )
+        self.assertEqual(
+            uv_smoke._pypy_install_mirror("https://uv.agentsmirror.com"),
+            "https://uv.agentsmirror.com/pypy",
         )
         self.assertEqual(
             uv_smoke._ghe_base_url("https://uv.agentsmirror.com"),
