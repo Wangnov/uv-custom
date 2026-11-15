@@ -1092,6 +1092,123 @@ test("falls back to stale s3 cache when upstream github api errors", async (t) =
   );
 });
 
+test("falls back to github expanded_assets html when api.github.com is rate-limited", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const cachedWrites = [];
+  const waitUntilPromises = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const pathname = new URL(request.url).pathname;
+
+    if (
+      /\/github\/api\/v3\/repos\/astral-sh\/uv\/releases\/tags\/0\.11\.5\.json$/.test(
+        pathname,
+      )
+    ) {
+      return new Response("missing", { status: 404 });
+    }
+    if (
+      /\/github-api-cache\/repos\/astral-sh\/uv\/releases\/tags\/0\.11\.5\.json$/.test(
+        pathname,
+      )
+    ) {
+      if (request.method === "PUT") {
+        cachedWrites.push(await request.text());
+        return new Response("", { status: 200 });
+      }
+      return new Response("missing", { status: 404 });
+    }
+    if (
+      request.url ===
+      "https://api.github.com/repos/astral-sh/uv/releases/tags/0.11.5"
+    ) {
+      return new Response(
+        JSON.stringify({ message: "API rate limit exceeded" }),
+        { status: 403 },
+      );
+    }
+    if (
+      request.url ===
+      "https://github.com/astral-sh/uv/releases/expanded_assets/0.11.5"
+    ) {
+      return new Response(
+        `<ul>
+          <li><a href="/astral-sh/uv/releases/download/0.11.5/uv-installer.sh">uv-installer.sh</a></li>
+          <li><a href="/astral-sh/uv/releases/download/0.11.5/uv-x86_64-unknown-linux-gnu.tar.gz">uv-x86_64-unknown-linux-gnu.tar.gz</a></li>
+          <li><relative-time datetime="2026-04-08T20:36:13Z"></relative-time></li>
+        </ul>`,
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+    }
+    throw new Error(`unexpected fetch: ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const ctx = {
+    waitUntil(promise) {
+      waitUntilPromises.push(promise);
+    },
+  };
+  const response = await worker.fetch(
+    new Request(
+      "https://uv.agentsmirror.com/api/v3/repos/astral-sh/uv/releases/tags/0.11.5",
+    ),
+    ENV,
+    ctx,
+  );
+  await Promise.all(waitUntilPromises);
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.tag_name, "0.11.5");
+  assert.equal(payload.published_at, "2026-04-08T20:36:13Z");
+  assert.equal(payload.assets.length, 2);
+  assert.equal(
+    payload.assets[0].browser_download_url,
+    "https://uv.agentsmirror.com/github/astral-sh/uv/releases/download/0.11.5/uv-installer.sh",
+  );
+  assert.equal(payload.assets[0].content_type, "application/x-sh");
+  assert.equal(payload.assets[1].content_type, "application/gzip");
+  assert.equal(cachedWrites.length, 1);
+});
+
+test("returns 404 when api.github.com is rate-limited and expanded_assets has no assets", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const pathname = new URL(request.url).pathname;
+
+    if (/\/(github\/api\/v3|github-api-cache)\//.test(pathname)) {
+      return new Response("missing", { status: 404 });
+    }
+    if (request.url.startsWith("https://api.github.com/")) {
+      return new Response(JSON.stringify({ message: "rate limit" }), {
+        status: 403,
+      });
+    }
+    if (
+      request.url ===
+      "https://github.com/astral-sh/uv/releases/expanded_assets/v0.11.5"
+    ) {
+      return new Response("<ul></ul>", { status: 200 });
+    }
+    throw new Error(`unexpected fetch: ${request.url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const response = await worker.fetch(
+    new Request(
+      "https://uv.agentsmirror.com/api/v3/repos/astral-sh/uv/releases/tags/v0.11.5",
+    ),
+    ENV,
+  );
+  assert.equal(response.status, 404);
+});
+
 test("rejects invalid github release tags and pagination params", async () => {
   for (const badUrl of [
     "https://uv.agentsmirror.com/api/v3/repos/astral-sh/uv/releases/tags/..%2Ffoo",

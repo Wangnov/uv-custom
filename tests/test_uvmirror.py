@@ -310,8 +310,13 @@ class ReleaseTests(unittest.TestCase):
             ],
         }
 
+        older = {
+            **release,
+            "tag_name": "0.13.7",
+            "name": "0.13.7",
+        }
         bundle = build_uv_releases_api_bundle(
-            [release], release, "https://uv.example.com"
+            [release, older], release, "https://uv.example.com"
         )
         self.assertEqual(
             set(bundle.keys()),
@@ -319,6 +324,7 @@ class ReleaseTests(unittest.TestCase):
                 "github/api/v3/repos/astral-sh/uv/releases.json",
                 "github/api/v3/repos/astral-sh/uv/releases/latest.json",
                 "github/api/v3/repos/astral-sh/uv/releases/tags/0.13.8.json",
+                "github/api/v3/repos/astral-sh/uv/releases/tags/0.13.7.json",
             },
         )
         self.assertNotIn(

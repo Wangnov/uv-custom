@@ -449,6 +449,7 @@ function matchGithubReleasesRoute(requestUrl, env) {
 
     return {
       apiPrefix,
+      tag,
       syncedKey: `github/api/v3/repos/astral-sh/uv/releases/tags/${tag}.json`,
       cacheKey: buildGithubApiCacheKey(
         env,
@@ -556,6 +557,19 @@ async function proxyGithubReleases(request, requestUrl, env, config, ctx, route)
         route.ttlSeconds,
       );
     }
+    if (route.tag) {
+      const webFallback = await fallbackGithubReleaseFromWeb(
+        request,
+        requestUrl,
+        env,
+        config,
+        ctx,
+        route,
+      );
+      if (webFallback) {
+        return webFallback;
+      }
+    }
     return jsonResponse(
       {
         error: "upstream_unavailable",
@@ -566,12 +580,11 @@ async function proxyGithubReleases(request, requestUrl, env, config, ctx, route)
   }
 
   if (!upstreamResponse.ok) {
-    if (
-      cachedResponse.ok &&
-      (upstreamResponse.status === 403 ||
-        upstreamResponse.status === 429 ||
-        upstreamResponse.status >= 500)
-    ) {
+    const isTransientOrRateLimit =
+      upstreamResponse.status === 403 ||
+      upstreamResponse.status === 429 ||
+      upstreamResponse.status >= 500;
+    if (cachedResponse.ok && isTransientOrRateLimit) {
       return buildGithubReleaseResponse(
         request.method,
         cachedResponse,
@@ -579,6 +592,19 @@ async function proxyGithubReleases(request, requestUrl, env, config, ctx, route)
         route.apiPrefix,
         route.ttlSeconds,
       );
+    }
+    if (route.tag && isTransientOrRateLimit) {
+      const webFallback = await fallbackGithubReleaseFromWeb(
+        request,
+        requestUrl,
+        env,
+        config,
+        ctx,
+        route,
+      );
+      if (webFallback) {
+        return webFallback;
+      }
     }
     return new Response(
       request.method === "HEAD" ? null : upstreamResponse.body,
@@ -625,6 +651,143 @@ async function proxyGithubReleases(request, requestUrl, env, config, ctx, route)
       "cache-control": `public, max-age=${route.ttlSeconds}`,
     },
   });
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function guessGithubAssetContentType(name) {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".sh")) return "application/x-sh";
+  if (lower.endsWith(".ps1")) return "text/plain";
+  if (lower.endsWith(".json")) return "application/json";
+  if (lower.endsWith(".tar.gz") || lower.endsWith(".tgz")) return "application/gzip";
+  if (lower.endsWith(".tar.xz") || lower.endsWith(".txz")) return "application/x-xz";
+  if (lower.endsWith(".tar.zst")) return "application/zstd";
+  if (lower.endsWith(".zip")) return "application/zip";
+  if (lower.endsWith(".sha256") || lower.endsWith(".sum") || lower.endsWith(".txt")) {
+    return "text/plain";
+  }
+  return "application/octet-stream";
+}
+
+function parseGithubExpandedAssetsHtml(html, tag, publicOrigin, apiPrefix) {
+  const encodedTag = encodeURIComponent(tag);
+  const tagVariants =
+    encodedTag === tag
+      ? escapeRegExp(tag)
+      : `(?:${escapeRegExp(tag)}|${escapeRegExp(encodedTag)})`;
+  const hrefPattern = new RegExp(
+    `href="/astral-sh/uv/releases/download/${tagVariants}/([^"'?#<>\\s]+)"`,
+    "g",
+  );
+  const seenNames = new Set();
+  const assets = [];
+  let match;
+  while ((match = hrefPattern.exec(html)) !== null) {
+    let assetName;
+    try {
+      assetName = decodeURIComponent(match[1]);
+    } catch {
+      assetName = match[1];
+    }
+    if (!assetName || assetName.includes("/") || seenNames.has(assetName)) {
+      continue;
+    }
+    seenNames.add(assetName);
+    const assetId = assets.length + 1;
+    assets.push({
+      url: `${publicOrigin}${apiPrefix}/repos/astral-sh/uv/releases/assets/${assetId}`,
+      id: assetId,
+      name: assetName,
+      content_type: guessGithubAssetContentType(assetName),
+      state: "uploaded",
+      size: 0,
+      browser_download_url: `${publicOrigin}/github/astral-sh/uv/releases/download/${encodedTag}/${encodeURIComponent(assetName)}`,
+    });
+  }
+  if (assets.length === 0) {
+    return null;
+  }
+
+  const timeMatch = html.match(/<relative-time[^>]*datetime="([^"]+)"/i);
+  const publishedAt = timeMatch ? timeMatch[1] : new Date().toISOString();
+  return {
+    url: `${publicOrigin}${apiPrefix}/repos/astral-sh/uv/releases/1`,
+    assets_url: `${publicOrigin}${apiPrefix}/repos/astral-sh/uv/releases/1/assets`,
+    html_url: `https://github.com/astral-sh/uv/releases/tag/${encodedTag}`,
+    id: 1,
+    tag_name: tag,
+    name: tag,
+    draft: false,
+    prerelease: false,
+    published_at: publishedAt,
+    assets,
+  };
+}
+
+async function fallbackGithubReleaseFromWeb(
+  request,
+  requestUrl,
+  env,
+  config,
+  ctx,
+  route,
+) {
+  const githubWebBase = (
+    env.GITHUB_WEB_UPSTREAM || "https://github.com"
+  ).replace(/\/+$/g, "");
+  const expandedUrl = `${githubWebBase}/astral-sh/uv/releases/expanded_assets/${encodeURIComponent(route.tag)}`;
+
+  let webResponse;
+  try {
+    webResponse = await fetch(
+      new Request(expandedUrl, {
+        method: "GET",
+        headers: {
+          accept: "text/html",
+          "user-agent": "uv-custom-origin-proxy",
+        },
+        redirect: "follow",
+        signal: request.signal,
+      }),
+    );
+  } catch {
+    return null;
+  }
+
+  if (webResponse.status === 404) {
+    return jsonResponse({ message: "Not Found" }, 404);
+  }
+  if (!webResponse.ok) {
+    return null;
+  }
+
+  const html = await webResponse.text();
+  const synthesized = parseGithubExpandedAssetsHtml(
+    html,
+    route.tag,
+    requestUrl.origin,
+    route.apiPrefix,
+  );
+  if (!synthesized) {
+    return jsonResponse({ message: "Not Found" }, 404);
+  }
+
+  const headers = {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": `public, max-age=${route.ttlSeconds}`,
+  };
+  if (request.method === "HEAD") {
+    return new Response(null, { status: 200, headers });
+  }
+
+  const responseBody = JSON.stringify(synthesized);
+  if (typeof ctx?.waitUntil === "function") {
+    ctx.waitUntil(storeCacheEntry(route.cacheKey, responseBody, config));
+  }
+  return new Response(responseBody, { status: 200, headers });
 }
 
 async function buildGithubReleaseResponse(
