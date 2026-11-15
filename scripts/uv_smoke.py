@@ -86,7 +86,15 @@ def _default_index_url(public_base_url: str) -> str:
 
 
 def _python_downloads_json_url(public_base_url: str) -> str:
-    return f"{public_base_url.rstrip('/')}/metadata/python-downloads.json"
+    return f"{public_base_url.rstrip('/')}/metadata/python-downloads-upstream.json"
+
+
+def _python_install_mirror(public_base_url: str) -> str:
+    return f"{public_base_url.rstrip('/')}/python-build-standalone/releases/download"
+
+
+def _pypy_install_mirror(public_base_url: str) -> str:
+    return f"{public_base_url.rstrip('/')}/pypy"
 
 
 def _ghe_base_url(public_base_url: str) -> str:
@@ -187,6 +195,8 @@ def main() -> None:
     env["UV_INSTALLER_GHE_BASE_URL"] = ghe_base_url
     env["UV_DEFAULT_INDEX"] = default_index_url
     env["UV_PYTHON_DOWNLOADS_JSON_URL"] = python_downloads_json_url
+    env.setdefault("UV_PYTHON_INSTALL_MIRROR", _python_install_mirror(public_base_url))
+    env.setdefault("UV_PYPY_INSTALL_MIRROR", _pypy_install_mirror(public_base_url))
 
     keep_project = args.keep_project or not auto_project_dir
     succeeded = False
