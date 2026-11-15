@@ -66,7 +66,8 @@ jobs:
           $configFile = Join-Path $env:APPDATA 'uv\uv.toml'
           $receiptHome = if ($env:XDG_CONFIG_HOME) { Join-Path $env:XDG_CONFIG_HOME 'uv' } else { Join-Path $env:LOCALAPPDATA 'uv' }
           $receiptFile = Join-Path $receiptHome 'uv-receipt.json'
-          $profileDir = Split-Path -Parent $PROFILE
+          $winProfile = (powershell -NoProfile -Command '$PROFILE').Trim()
+          $profileDir = Split-Path -Parent $winProfile
 
           New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
           New-Item -ItemType Directory -Path $binDir -Force | Out-Null
@@ -78,7 +79,7 @@ jobs:
           Remove-Item $configFile -ErrorAction SilentlyContinue
           Remove-Item $receiptFile -ErrorAction SilentlyContinue
 
-          [System.IO.File]::WriteAllText($PROFILE, '', [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::WriteAllText($winProfile, '', [System.Text.UTF8Encoding]::new($false))
 
       - name: Probe PyPI proxy on Unix
         if: runner.os != 'Windows'
@@ -231,8 +232,9 @@ jobs:
           $receiptFile = Join-Path $receiptHome 'uv-receipt.json'
           $binDir = Join-Path $HOME '.local\bin'
           $expectedUvPath = Join-Path $binDir 'uv.exe'
+          $winProfile = (powershell -NoProfile -Command '$PROFILE').Trim()
 
-          . $PROFILE
+          . $winProfile
           Add-Content -Path $env:GITHUB_PATH -Value $binDir
           $env:PATH = "$binDir;$env:PATH"
 
@@ -247,7 +249,7 @@ jobs:
           $uvVersion = (& uv --version).Trim()
           Set-Content -Path (Join-Path $artifactDir 'uv-version.txt') -Value $uvVersion -Encoding UTF8
 
-          Copy-Item $PROFILE (Join-Path $artifactDir 'profile.ps1')
+          Copy-Item $winProfile (Join-Path $artifactDir 'profile.ps1')
           Copy-Item $configFile (Join-Path $artifactDir 'uv.toml')
           Copy-Item $receiptFile (Join-Path $artifactDir 'uv-receipt.json')
 
@@ -259,7 +261,7 @@ jobs:
             '$env:UV_PYPY_INSTALL_MIRROR = "https://uv.agentsmirror.com/pypy"',
             '$env:UV_DEFAULT_INDEX = "https://uv.agentsmirror.com/pypi/simple"'
           )) {
-            if (-not (Select-String -Path $PROFILE -Pattern $pattern -SimpleMatch -Quiet)) {
+            if (-not (Select-String -Path $winProfile -Pattern $pattern -SimpleMatch -Quiet)) {
               throw "Missing managed block pattern in profile: $pattern"
             }
           }
@@ -356,8 +358,9 @@ jobs:
           $projectDir = Join-Path $env:RUNNER_TEMP 'smoke-app'
           $smokeLog = Join-Path $artifactDir 'uv-smoke.log'
           $binDir = Join-Path $HOME '.local\bin'
+          $winProfile = (powershell -NoProfile -Command '$PROFILE').Trim()
 
-          . $PROFILE
+          . $winProfile
           $env:PATH = "$binDir;$env:PATH"
 
           Remove-Item $projectDir -Recurse -Force -ErrorAction SilentlyContinue

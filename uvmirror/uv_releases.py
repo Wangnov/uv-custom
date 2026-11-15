@@ -71,6 +71,14 @@ def rewrite_uv_release_payload(
     return rewritten
 
 
+def _is_safe_release_tag(tag: object) -> bool:
+    return (
+        isinstance(tag, str)
+        and ".." not in tag
+        and bool(_SAFE_TAG_RE.match(tag))
+    )
+
+
 def build_uv_releases_api_bundle(
     releases_list: list[dict[str, object]],
     latest_release: dict[str, object],
@@ -88,15 +96,15 @@ def build_uv_releases_api_bundle(
     ]
 
     bundle: dict[str, object] = {
-        "github/api/v3/repos/astral-sh/uv/releases.json": rewritten_list,
+        "github/api/v3/repos/astral-sh/uv/releases.json": rewritten_list[:30],
         "github/api/v3/repos/astral-sh/uv/releases/latest.json": rewritten_latest,
     }
+    for entry in rewritten_list:
+        tag = entry.get("tag_name")
+        if _is_safe_release_tag(tag):
+            bundle[f"github/api/v3/repos/astral-sh/uv/releases/tags/{tag}.json"] = entry
     tag_name = rewritten_latest.get("tag_name")
-    if (
-        isinstance(tag_name, str)
-        and ".." not in tag_name
-        and _SAFE_TAG_RE.match(tag_name)
-    ):
+    if _is_safe_release_tag(tag_name):
         bundle[f"github/api/v3/repos/astral-sh/uv/releases/tags/{tag_name}.json"] = (
             rewritten_latest
         )
